@@ -1,0 +1,17 @@
+[project]
+name = "ocrorchestrator"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "ajkdrag", email = "altamashjahangirkhan123@gmail.com"},
+]
+dependencies = [
+    "pydantic>=2.7.4",
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
