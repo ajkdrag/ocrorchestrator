@@ -6,10 +6,10 @@ from pydantic import BaseModel, Field, root_validator
 
 class TaskConfig(BaseModel):
     processor: str
-    handler: Optional[str] = None
+    api: Optional[str] = None
     model: Optional[str] = None
     prompt_template: Optional[str] = None
-    extra_kwargs: Optional[Dict] = Field(default_factory=dict)
+    params: Optional[List] = Field(default_factory=list)
     fields: Optional[List[str]] = None
     classes: Optional[List[str]] = None
 

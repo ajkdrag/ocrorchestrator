@@ -1,11 +1,9 @@
 from ..config.app_config import GeneralConfig, TaskConfig
-from ..processors import (
-    BaseProcessor,
-    DocumentValidationProcessor,  # noqa: F401
-    LLMProcessor,
-    MicroserviceProcessor,
-)
+from ..datamodels.api_io import AppException
+from ..processors import *  # noqa: F403
+from ..processors.base import BaseProcessor
 from ..repos import BaseRepo
+from ..utils.constants import ErrorCode
 
 
 class ProcessorFactory:
@@ -15,13 +13,11 @@ class ProcessorFactory:
         general_config: GeneralConfig,
         repo: BaseRepo,
     ) -> BaseProcessor:
-        name = task_config.processor
-        if name == "llm":
-            return LLMProcessor(task_config, general_config, repo)
-        elif name == "microservice":
-            return MicroserviceProcessor(task_config, general_config, repo)
-        elif name == "custom":
-            class_name = task_config.handler
+        class_name = task_config.processor
+        try:
             return globals()[class_name](task_config, general_config, repo)
-        else:
-            raise ValueError(f"Unknown processor: {name}")
+        except Exception as e:
+            raise AppException(
+                ErrorCode.INITIALIZATION_ERROR,
+                f"Unknown processor: {class_name}. Exc: {e}",
+            ) from e

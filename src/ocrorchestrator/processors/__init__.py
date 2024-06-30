@@ -1,4 +1,4 @@
 from .base import BaseProcessor
-from .custom import DocumentValidationProcessor
+from .gradio import PaliGemmaGradioProcessor
 from .llm import LLMProcessor
-from .microservice import MicroserviceProcessor
+from .pytorch import DocumentValidationProcessor

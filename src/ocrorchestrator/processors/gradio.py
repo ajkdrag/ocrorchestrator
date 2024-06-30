@@ -27,17 +27,28 @@ class GradioProcessor(BaseProcessor):
 
         self.client = Client(self.model)
 
+    def _result_parser(self, raw: Any) -> Dict[str, Any]:
+        return raw
+
     def process(self, req: OCRRequest) -> Dict[str, Any]:
+        from gradio_client import file
+
         image = base64_to_pil(req.image)
 
         with NamedTemporaryFile(delete=False, suffix=".jpg") as fp:
             image.save(fp.name)
             result = self.client.predict(
-                fp.name,
+                file(fp.name),
                 *self.params,
                 api_name=self.api,
             )
 
-            # Process the result
-            print(result.__dict__)
-            return result
+            return self._result_parser(result)
+
+
+class PaliGemmaGradioProcessor(GradioProcessor):
+    def _result_parser(self, raw: Any) -> Dict[str, Any]:
+        try:
+            return {"output": raw[0]["value"][0]["token"]}
+        except Exception as e:
+            return {"error": str(e)}

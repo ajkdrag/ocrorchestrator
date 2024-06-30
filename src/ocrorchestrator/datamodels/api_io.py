@@ -8,7 +8,7 @@ from ..utils.constants import ErrorCode
 
 
 class OCRRequest(BaseModel):
-    image: str  # base64 encoded image
+    image: bytes # base64 encoded image
     guid: Optional[str] = Field(default_factory=uuid4)
     category: str
     task: str

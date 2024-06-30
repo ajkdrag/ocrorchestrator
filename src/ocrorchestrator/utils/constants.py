@@ -9,6 +9,7 @@ class ErrorCode(Enum):
     INTERNAL_SERVER_ERROR = (500, "Internal Server Error")
     PROCESSOR_NOT_FOUND = (501, "Processor Not Found")
     PROCESSING_ERROR = (502, "Processing Error")
+    INITIALIZATION_ERROR = (503, "Initialization Error")
 
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
