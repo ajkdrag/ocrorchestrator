@@ -1,17 +1,26 @@
 from typing import Any, Dict
 
-from ..config.app_config import TaskConfig
-from ..utils.artifacts import ArtifactManager
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import OCRRequest, OCRRequestOffline
+from ..repos import BaseRepo
 
 
 class BaseProcessor:
     def __init__(
         self,
         task_config: TaskConfig,
-        artifact_manager: ArtifactManager,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
     ):
         self.task_config = task_config
-        self.artifact_manager = artifact_manager
+        self.general_config = general_config
+        self.repo = repo
 
-    async def process(self, image: bytes) -> Dict[str, Any]:
+    def setup(self) -> None:
+        raise NotImplementedError
+
+    def process(self, req: OCRRequest) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         raise NotImplementedError

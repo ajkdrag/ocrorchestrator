@@ -7,6 +7,10 @@ authors = [
 ]
 dependencies = [
     "pydantic>=2.7.4",
+    "jupyter>=1.0.0",
+    "matplotlib>=3.7.5",
+    "fastapi>=0.111.0",
+    "structlog>=24.2.0",
 ]
 requires-python = ">=3.8"
 readme = "README.md"
@@ -15,3 +19,13 @@ license = {text = "MIT"}
 
 [tool.pdm]
 distribution = false
+
+
+[tool.pdm.scripts]
+nb = "jupyter-lab --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token=''"
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "-e file:///${PROJECT_ROOT}/#egg=ocrorchestrator",
+    "devtools>=0.12.2",
+]

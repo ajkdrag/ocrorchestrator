@@ -1,37 +1,27 @@
-from typing import Dict
-
+from ..config.app_config import GeneralConfig, TaskConfig
 from ..processors import (
     BaseProcessor,
+    DocumentValidationProcessor,  # noqa: F401
     LLMProcessor,
     MicroserviceProcessor,
 )
-from ..utils.artifacts import ArtifactManager
+from ..repos import BaseRepo
 
 
 class ProcessorFactory:
-    def __init__(self, artifact_manager: ArtifactManager):
-        self.artifact_manager = artifact_manager
-        self.processors: Dict[str, BaseProcessor] = {}
-        self._initialize()
-
-    def _initialize(self):
-        app_config = self.artifact_manager.get_config()
-        for category, task_type, task_config in app_config.iterate():
-            key = f"{category}_{task_type}"
-            if task_config.processor == "llm":
-                self.processors[key] = LLMProcessor(
-                    task_config, self.artifact_manager)
-            elif task_config.processor == "microservice":
-                self.processors[key] = MicroserviceProcessor(
-                    task_config, self.artifact_manager
-                )
-            elif task_config.processor == "custom":
-                self.processors[key] = globals()[task_config.handler](
-                    task_config, self.artifact_manager
-                )
-            else:
-                raise ValueError(f"Unknown processor: {task_config.processor}")
-
-    def refresh(self):
-        self.processors.clear()
-        self._initialize()
+    @staticmethod
+    def create_processor(
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ) -> BaseProcessor:
+        name = task_config.processor
+        if name == "llm":
+            return LLMProcessor(task_config, general_config, repo)
+        elif name == "microservice":
+            return MicroserviceProcessor(task_config, general_config, repo)
+        elif name == "custom":
+            class_name = task_config.handler
+            return globals()[class_name](task_config, general_config, repo)
+        else:
+            raise ValueError(f"Unknown processor: {name}")
