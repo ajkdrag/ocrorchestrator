@@ -1,5 +1,7 @@
 from enum import Enum
 
+IMG_SIZE = (224, 224)
+
 
 class ErrorCode(Enum):
     SUCCESS = (200, "Success")

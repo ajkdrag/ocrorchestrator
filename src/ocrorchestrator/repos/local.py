@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -19,8 +19,6 @@ class LocalRepo(BaseRepo):
         with open(full_path, "r") as file:
             return file.read()
 
-    def download_obj(self, path: str, local_path: str) -> None:
-        import shutil
-
+    def download_obj(self, path: str, local_path: Optional[str] = None) -> None:
         full_path = f"{self.base_path}/{path}"
-        shutil.copy2(full_path, local_path)
+        return full_path

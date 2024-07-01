@@ -12,6 +12,8 @@ dependencies = [
     "fastapi>=0.111.0",
     "structlog>=24.2.0",
     "gradio-client>=1.0.2",
+    "torch>=2.0.0",
+    "torchvision>=0.18.1",
 ]
 requires-python = ">=3.8"
 readme = "README.md"
@@ -21,6 +23,10 @@ license = {text = "MIT"}
 [tool.pdm]
 distribution = false
 
+[[tool.pdm.source]]
+type = "find_links"
+url = "https://download.pytorch.org/whl/cpu/torch_stable.html"
+name = "torch"
 
 [tool.pdm.scripts]
 nb = "jupyter-lab --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token=''"

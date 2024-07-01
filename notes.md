@@ -3,6 +3,7 @@
 ```json
 {
   "image": "base64_encoded_string",
+  "guid": "optional unique id",
   "category": "string",
   "task_type": "string",
   "fields": ["string"]
@@ -98,32 +99,44 @@ proof_of_funds:
 ## Folder Structure
 
 ```bash
-├── notebooks
-├── notes.md
-├── pdm.lock
-├── __pycache__
-├── pyproject.toml
-├── README.md
-├── src
-│   └── ocrorchestrator
-│       ├── config
-│       │   └── app_config.py
-│       ├── __init__.py
-│       ├── main.py
-│       ├── processors
-│       │   ├── base.py
-│       │   ├── custom.py
-│       │   ├── factory.py
-│       │   ├── __init__.py
-│       │   ├── llm.py
-│       │   └── microservice.py
-│       ├── __pycache__
-│       └── utils
-│           ├── artifacts.py
-│           └── gcs.py
-└── tests
-    ├── __init__.py
-    └── __pycache__
+src/ocrorchestrator
+├── artifacts
+│   ├── base.py
+│   ├── __init__.py
+│   ├── model.py
+│   └── prompt.py
+├── config
+│   └── app_config.py
+├── datamodels
+│   └── api_io.py
+├── deps.py
+├── __init__.py
+├── main.py
+├── manager.py
+├── managers
+│   ├── artifact.py
+│   └── processor.py
+├── processors
+│   ├── base.py
+│   ├── factory.py
+│   ├── gradio.py
+│   ├── __init__.py
+│   ├── llm.py
+│   ├── microservice.py
+│   └── pytorch.py
+├── repos
+│   ├── base.py
+│   ├── factory.py
+│   ├── gcs.py
+│   ├── __init__.py
+│   └── local.py
+├── routers.py
+└── utils
+    ├── constants.py
+    ├── img.py
+    ├── logging.py
+    ├── misc.py
+    └── ml.py
 ```
 
 

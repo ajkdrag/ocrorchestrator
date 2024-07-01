@@ -24,3 +24,4 @@ class GCSRepo(BaseRepo):
     def download_obj(self, path: str, local_path: str) -> None:
         blob = self.bucket.blob(path)
         blob.download_to_filename(local_path)
+        return local_path

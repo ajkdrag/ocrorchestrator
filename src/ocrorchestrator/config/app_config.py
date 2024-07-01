@@ -1,7 +1,13 @@
 from collections import OrderedDict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, root_validator
+
+
+class TorchClassifierOutput(BaseModel):
+    prediction: str
+    conf: float
+    probs: Dict[str, float]
 
 
 class TaskConfig(BaseModel):
@@ -9,25 +15,41 @@ class TaskConfig(BaseModel):
     api: Optional[str] = None
     model: Optional[str] = None
     prompt_template: Optional[str] = None
-    params: Optional[List] = Field(default_factory=list)
+    params: List = Field(default_factory=list)
     fields: Optional[List[str]] = None
     classes: Optional[List[str]] = None
+    args: List[Any] = Field(default_factory=list)
+    kwargs: Dict[str, Any] = Field(default_factory=dict)
+
+    @root_validator(pre=True)
+    def extract_args_and_kwargs(cls, values):
+        params = values.get("params", [])
+        args = []
+        kwargs = {}
+        for param in params:
+            if isinstance(param, dict):
+                kwargs.update(param)
+            else:
+                args.append(param)
+        values["args"] = args
+        values["kwargs"] = kwargs
+        return values
 
 
 class GeneralConfig(BaseModel):
-    prompts_dir: Optional[str] = Field(default="prompt_templates")
-    models_dir: Optional[str] = Field(default="models")
+    prompts_dir: str = Field(default="prompts")
+    models_dir: str = Field(default="models")
+    normalization_stats: Dict[str, List[float]] = Field(
+        default={
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+        }
+    )
 
 
 class AppConfig(BaseModel):
-    general: GeneralConfig
+    general: GeneralConfig = Field(default_factory=GeneralConfig)
     categories: Dict[str, OrderedDict[str, Optional[TaskConfig]]]
-
-    @root_validator(pre=True)
-    def ensure_general_config(cls, values):
-        if "general" not in values or values["general"] is None:
-            values["general"] = GeneralConfig().dict()
-        return values
 
     def iterate(self) -> tuple[str, str, TaskConfig]:
         for category, category_config in self.categories.items():
