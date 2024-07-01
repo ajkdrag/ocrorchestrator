@@ -22,16 +22,19 @@ class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
     ):
         super().__init__(task_config, general_config, repo)
         self.models_dir = general_config.models_dir
-        self.checkpoint = repo.download_obj(
-            os.path.join(self.models_dir, task_config.model)
-        )
         self.model_name = task_config.model.split("__")[0]
         self.classes = self.task_config.classes
 
-    def setup(self):
+    def _setup(self):
+        checkpoint = self.repo.download_obj(
+            os.path.join(
+                self.models_dir,
+                self.task_config.model,
+            )
+        )
         self.load_model(
-            self.task_config.model.split("__")[0],
-            self.checkpoint,
+            self.model_name,
+            checkpoint,
             self.classes,
         )
 
@@ -40,7 +43,7 @@ class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
             self.general_config.normalization_stats,
         )
 
-    def process(self, req: OCRRequest) -> Dict[str, Any]:
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
         image = base64_to_pil(req.image)
         op = self.predict(image, self.task_config.classes)
         target = self.task_config.kwargs.get("target", self.classes[0])

@@ -20,9 +20,8 @@ class GradioProcessor(BaseProcessor):
         super().__init__(task_config, general_config, repo)
         self.api = task_config.api
         self.model = task_config.model
-        self.params = task_config.params
 
-    def setup(self):
+    def _setup(self):
         from gradio_client import Client
 
         self.client = Client(self.model)
@@ -30,17 +29,18 @@ class GradioProcessor(BaseProcessor):
     def _result_parser(self, raw: Any) -> Dict[str, Any]:
         return raw
 
-    def process(self, req: OCRRequest) -> Dict[str, Any]:
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
         from gradio_client import file
 
         image = base64_to_pil(req.image)
 
-        with NamedTemporaryFile(delete=False, suffix=".jpg") as fp:
+        with NamedTemporaryFile(delete=True, suffix=".jpg") as fp:
             image.save(fp.name)
             result = self.client.predict(
                 file(fp.name),
-                *self.params,
+                *self.task_config.args,
                 api_name=self.api,
+                **self.task_config.kwargs,
             )
 
             return self._result_parser(result)

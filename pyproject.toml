@@ -14,8 +14,11 @@ dependencies = [
     "gradio-client>=1.0.2",
     "torch>=2.0.0",
     "torchvision>=0.18.1",
+    "langchain-google-vertexai>=1.0.4",
+    "langchain>=0.2.1",
+    "google-cloud-storage>=2.16.0",
 ]
-requires-python = ">=3.8"
+requires-python = "<4.0,>=3.8.1"
 readme = "README.md"
 license = {text = "MIT"}
 

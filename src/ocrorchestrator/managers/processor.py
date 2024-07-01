@@ -22,7 +22,7 @@ class ProcessorManager:
                 self.app_config.general,
                 self.repo,
             )
-            processor.setup()
+            processor._setup()
             self.processors[key] = processor
 
     def refresh(self):
