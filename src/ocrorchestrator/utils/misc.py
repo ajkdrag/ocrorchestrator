@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field, create_model
 
 
 def generate_dynamic_model(
-    self,
     fields: List[str],
     name="ExtractedOutputModel",
 ) -> BaseModel:
@@ -14,8 +13,10 @@ def generate_dynamic_model(
             field_definitions[field] = (bool, Field(default=False))
         elif field.endswith(("_no", "_date", "_name")):
             field_definitions[field] = (str, Field(default=""))
-        elif field.endswith("_amount"):
+        elif field.endswith("amount"):
             field_definitions[field] = (float, Field(default=None))
+        elif field.endswith("amounts"):
+            field_definitions[field] = (dict, Field(default={}))
         else:
             field_definitions[field] = (str, Field(default=""))
 

@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Any, Dict
 
 import structlog
@@ -12,8 +11,7 @@ from langchain_google_vertexai import ChatVertexAI
 from PIL import Image
 
 from ..config.app_config import TorchClassifierOutput
-from ..datamodels.api_io import AppException
-from .constants import SAFETY_SETTINGS, ErrorCode
+from .constants import SAFETY_SETTINGS
 from .misc import generate_dynamic_model
 from .ml import get_device, load_pretrained_classifier
 
@@ -50,7 +48,13 @@ class VertexAILangchainMixin:
     def load_prompt(self, prompt: str):
         self.prompt = prompt
         self.prompt_temp = PromptTemplate(
-            template="{sys_prompt}\n{format}\n",
+            template="\n".join(
+                [
+                    "{sys_prompt}",
+                    "{format}",
+                    "Analyze the image and return the fields in the right format.",
+                ]
+            ),
             input_variables=[],
             partial_variables={
                 "sys_prompt": prompt,

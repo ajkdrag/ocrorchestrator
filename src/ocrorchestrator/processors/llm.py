@@ -28,7 +28,10 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
             "temperature": task_config.kwargs.get("temperature", 0.1),
             "top_p": task_config.kwargs.get("top_p", 0.4),
             "top_k": task_config.kwargs.get("top_k", 28),
-            "max_output_tokens": task_config.kwargs.get("max_output_tokens", 1024),
+            "max_output_tokens": task_config.kwargs.get(
+                "max_output_tokens",
+                2048,
+            ),
         }
 
     def _setup(self):
