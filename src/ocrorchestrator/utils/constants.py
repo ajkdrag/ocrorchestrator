@@ -21,6 +21,7 @@ class ErrorCode(Enum):
     PROCESSOR_NOT_FOUND = (501, "Processor Not Found")
     PROCESSING_ERROR = (502, "Processing Error")
     INITIALIZATION_ERROR = (503, "Initialization Error")
+    API_CALL_ERROR = (601, "Api Call Error")
 
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code

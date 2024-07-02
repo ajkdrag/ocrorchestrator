@@ -2,17 +2,22 @@ from typing import Any, List, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 
 from ..utils.constants import ErrorCode
 
 
 class OCRRequest(BaseModel):
-    image: bytes # base64 encoded image
+    image: str # base64 encoded image
     guid: Optional[str] = Field(default_factory=uuid4)
     category: str
     task: str
     fields: Optional[List[str]] = None
+
+    @root_validator(pre=True)
+    def image_to_utf8(cls, values):
+        values["image"] = values["image"].decode("utf-8")
+        return values
 
 
 class OCRRequestOffline(BaseModel):

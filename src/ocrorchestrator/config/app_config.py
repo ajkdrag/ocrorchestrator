@@ -64,6 +64,7 @@ class AppConfig(BaseModel):
 
         task_config = category_config.get(task)
         if not task_config:
-            raise ValueError(f"Task '{task}' not found for category '{category}'")
+            raise ValueError(
+                f"Task '{task}' not found for category '{category}'")
 
         return task_config

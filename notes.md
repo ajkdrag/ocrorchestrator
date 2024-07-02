@@ -18,7 +18,7 @@
 Examples:
 
 For classification, model will always give `class` and `confidence`.
-For validation, model will always give `is_valid` and `reason`.
+For validation, model will always give `is_valid` and `reason` and `confidence`.
 For extraction, model will give all fields specified in config.
 If we only want subset of whatever model is capturing,
 use the `outputs` attribute and pass whatever fields are required. 
