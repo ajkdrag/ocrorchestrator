@@ -27,11 +27,11 @@ def create_dynamic_message(
     resp: Dict[str, Any], fields: Optional[List[str]] = None
 ) -> BaseModel:
     if fields is None:
-        field_definitions = {field: type(value)
+        field_definitions = {field: (type(value), ...)
                              for field, value in resp.items()}
     else:
         field_definitions = {
-            field: type(resp[field]) for field in fields if field in resp
+            field: (type(resp[field]), ...) for field in fields if field in resp
         }
     DynamicMessage = create_model("DynamicMessage", **field_definitions)
     return DynamicMessage(**resp)

@@ -45,6 +45,7 @@ class GeneralConfig(BaseModel):
             "std": [0.229, 0.224, 0.225],
         }
     )
+    log_model_output: bool = Field(default=False)
 
 
 class AppConfig(BaseModel):

@@ -31,6 +31,8 @@ class LoggerMiddleware(BaseHTTPMiddleware):
             request_data = await request.json()
             structlog.contextvars.bind_contextvars(
                 guid=request_data.get("guid", ""),
+                category=request_data.get("category", ""),
+                task=request_data.get("task", ""),
             )
 
         response = await call_next(request)

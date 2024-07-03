@@ -1,0 +1,1260 @@
+src/ocrorchestrator/__init__.py
+---
+import logging
+import sys
+
+import structlog
+from structlog.processors import CallsiteParameter
+
+# Disable uvicorn logging
+logging.getLogger("uvicorn.error").disabled = True
+logging.getLogger("uvicorn.access").disabled = True
+
+# Structlog configuration
+logging.basicConfig(
+    format="%(message)s",
+    stream=sys.stdout,
+    level=logging.INFO,
+)
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.ExceptionRenderer(),
+        structlog.dev.set_exc_info,
+        structlog.processors.CallsiteParameterAdder(
+            [
+                CallsiteParameter.FUNC_NAME,
+                CallsiteParameter.LINENO,
+            ],
+        ),
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.JSONRenderer(),
+    ],
+    logger_factory=structlog.PrintLoggerFactory(),
+)
+
+
+---
+src/ocrorchestrator/routers.py
+---
+import traceback
+from typing import Callable
+
+import structlog
+from fastapi import APIRouter, Depends
+
+from .datamodels.api_io import AppException, AppResponse, OCRRequest
+from .deps import get_processor
+from .processors import BaseProcessor
+from .utils.constants import ErrorCode
+from .utils.misc import create_dynamic_message
+
+ocr_router = APIRouter()
+log = structlog.get_logger()
+
+
+def process_request(req: OCRRequest, func: Callable) -> AppResponse:
+    log.info("#### Processing request ####")
+    try:
+        response = func(req)
+        message = create_dynamic_message(response, req.fields)
+        log.info("#### Request processed successfully ####")
+        return AppResponse(status="OK", status_code=200, message=message)
+    except Exception as e:
+        log.error(f"Error in {func.__name__}", exc_info=True)
+        if isinstance(e, AppException):
+            raise e
+        error_code = ErrorCode.INTERNAL_SERVER_ERROR
+        raise AppException(error_code, traceback.format_exc()) from e
+
+
+@ocr_router.post("/predict")
+async def predict(
+    req: OCRRequest,
+    processor: BaseProcessor = Depends(get_processor),
+):
+    return process_request(req, processor.process)
+
+
+@ocr_router.post("/predict_offline")
+async def predict_offline(
+    req: OCRRequest,
+    processor: BaseProcessor = Depends(get_processor),
+):
+    return process_request(req, processor.process_offline)
+
+
+---
+src/ocrorchestrator/deps.py
+---
+from fastapi import Depends, Request
+
+from .config.app_config import AppConfig
+from .datamodels.api_io import AppException, OCRRequest
+from .managers.processor import ProcessorManager
+from .processors import BaseProcessor
+from .repos import BaseRepo
+from .utils.constants import ErrorCode
+from .utils.misc import create_task_key
+
+
+def get_repo(req: Request) -> BaseRepo:
+    return req.app.state.repo
+
+
+def get_config(req: Request) -> AppConfig:
+    return req.app.state.config
+
+
+def get_proc_manager(req: Request) -> ProcessorManager:
+    return req.app.state.proc_manager
+
+
+def get_processor(
+    req: OCRRequest,
+    manager: ProcessorManager = Depends(get_proc_manager),
+) -> BaseProcessor:
+    key = create_task_key(req.category, req.task)
+    processor = manager.processors.get(key)
+    if not processor:
+        raise AppException(
+            ErrorCode.PROCESSOR_NOT_FOUND,
+            f"No processor found for {key}",
+        )
+    return processor
+
+
+---
+src/ocrorchestrator/main.py
+---
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import structlog
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+from .config.app_config import AppConfig
+from .datamodels.api_io import AppException, AppResponse
+from .managers.processor import ProcessorManager
+from .repos.factory import RepoFactory
+from .routers import ocr_router
+from .utils.logging import LoggerMiddleware
+
+# constants
+PKG_ROOT = Path(__file__).parent
+PROJ_ROOT = PKG_ROOT.parent.parent
+config_path = "configs/config_v1.yaml"
+
+log = structlog.get_logger()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("**** Starting application ****")
+    base_path = PROJ_ROOT.joinpath("data/my-bucket").as_posix()
+    repo = RepoFactory.create_repo("local", base_path=base_path)
+    config = AppConfig(**repo.get_yaml(config_path))
+    proc_manager = ProcessorManager(config, repo)
+    app.state.repo = repo
+    app.state.config = config
+    app.state.proc_manager = proc_manager
+    yield
+    log.info("**** Shutting down application ****")
+    app.state.repo = None
+    app.state.config = None
+    app.state.proc_manager = None
+
+
+async def ocr_exception_handler(request: Request, exc: AppException):
+    log.error(f"Exception occurred: {exc.detail}", status_code=exc.status_code)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=AppResponse(
+            status=exc.status,
+            status_code=exc.status_code,
+            message=exc.detail,
+        ).dict(),
+    )
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(LoggerMiddleware)
+app.include_router(ocr_router)
+app.add_exception_handler(AppException, ocr_exception_handler)
+
+
+@app.get("/")
+async def root():
+    log.info("Root endpoint accessed")
+    return {"message": "Hello Bigger Applications!"}
+
+
+---
+src/ocrorchestrator/datamodels/api_io.py
+---
+from typing import Any, List, Optional
+from uuid import uuid4
+
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
+
+from ..utils.constants import ErrorCode
+
+
+class OCRRequest(BaseModel):
+    image: str  # base64 image as utf-8
+    guid: Optional[str] = Field(default_factory=uuid4)
+    category: str
+    task: str
+    fields: Optional[List[str]] = None
+
+
+class OCRRequestOffline(BaseModel):
+    location: str  # path to gcs/s3
+    guid: Optional[str] = Field(default_factory=uuid4)
+    category: str
+    task: str
+    fields: Optional[List[str]] = Field(default_factory=list)
+
+
+class AppResponse(BaseModel):
+    status: str
+    status_code: int
+    message: Any
+
+
+class AppException(HTTPException):
+    def __init__(self, error_code: ErrorCode, detail: str = None):
+        super().__init__(
+            status_code=error_code.status_code,
+            detail=detail or error_code.message,
+        )
+        self.status = error_code.name
+
+
+---
+src/ocrorchestrator/utils/ml.py
+---
+from typing import Optional
+
+import structlog
+import torch
+
+from .constants import PRETRAINED_MODELS
+
+log = structlog.get_logger()
+
+
+def get_device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def load_pretrained_classifier(
+    model_name,
+    checkpoint=None,
+    num_classes=None,
+    device: Optional[torch.device] = None,
+):
+    if model_name not in PRETRAINED_MODELS:
+        raise ValueError(f"Model {model_name} is not supported.")
+
+    device = device or get_device()
+
+    model = PRETRAINED_MODELS[model_name](weights="DEFAULT")
+
+    if num_classes is not None:
+        model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+
+    log.info(
+        f"Initialized model {model_name} with {num_classes} classes, on {device}")
+    if checkpoint:
+        log.info(f"Loading from checkpoint: {checkpoint}")
+        model.load_state_dict(torch.load(checkpoint, map_location=device))
+
+    return model
+
+
+---
+src/ocrorchestrator/utils/img.py
+---
+from base64 import b64decode
+from io import BytesIO
+
+from PIL import Image
+
+
+def base64_to_pil(b64str):
+    return Image.open(BytesIO(b64decode(b64str))).convert("RGB")
+
+
+---
+src/ocrorchestrator/utils/logging.py
+---
+import uuid
+
+import structlog
+from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
+logger = structlog.get_logger()
+
+healthcheck_routes = [
+    "/ocrorchestrator",
+    "/ocrorchestrator/",
+]
+
+
+class LoggerMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        path = request.url.path
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(
+            method=request.method,
+            client_host=request.client.host,
+            trans_id=str(uuid.uuid4()),
+            api_name=path,
+        )
+
+        if request.method == "POST" and path not in healthcheck_routes:
+            request_data = await request.json()
+            structlog.contextvars.bind_contextvars(
+                guid=request_data.get("guid", ""),
+                category=request_data.get("category", ""),
+                task=request_data.get("task", ""),
+            )
+
+        response = await call_next(request)
+
+        structlog.contextvars.bind_contextvars(
+            status_code=response.status_code,
+        )
+
+        if path not in healthcheck_routes:
+            if 400 <= response.status_code < 500:
+                logger.warn("Client error")
+            elif response.status_code >= 500:
+                logger.error("Server error")
+            else:
+                logger.info("OK")
+
+        return response
+
+
+---
+src/ocrorchestrator/utils/constants.py
+---
+from enum import Enum
+
+import torchvision.models as models
+from langchain_google_vertexai import HarmBlockThreshold as HT
+from vertexai.generative_models import HarmCategory as HC
+
+IMG_SIZE = (224, 224)
+
+PRETRAINED_MODELS = {
+    "resnet50": models.resnet50,
+    "resnet18": models.resnet18,
+}
+
+
+class ErrorCode(Enum):
+    SUCCESS = (200, "Success")
+    BAD_REQUEST = (400, "Bad Request")
+    UNAUTHORIZED = (401, "Unauthorized")
+    NOT_FOUND = (404, "Not Found")
+    INTERNAL_SERVER_ERROR = (500, "Internal Server Error")
+    PROCESSOR_NOT_FOUND = (501, "Processor Not Found")
+    PROCESSING_ERROR = (502, "Processing Error")
+    INITIALIZATION_ERROR = (503, "Initialization Error")
+    API_CALL_ERROR = (601, "Api Call Error")
+    REPO_GET_ERROR = (701, "Error reading file")
+    REPO_GET_ERROR = (702, "Error reading file")
+    REPO_OBJECT_DOWNLOAD_ERROR = (703, "Error downloading object")
+    REPO_INITIALIZATION_ERROR = (704, "Error initializing repository")
+
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
+
+
+SAFETY_SETTINGS = {
+    HC.HARM_CATEGORY_UNSPECIFIED: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_DANGEROUS_CONTENT: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_HATE_SPEECH: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_HARASSMENT: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_SEXUALLY_EXPLICIT: HT.BLOCK_NONE,
+}
+
+
+---
+src/ocrorchestrator/utils/misc.py
+---
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, create_model
+
+
+def generate_dynamic_model(
+    fields: List[str],
+    name="ExtractedOutputModel",
+) -> BaseModel:
+    field_definitions = {}
+    for field in fields:
+        if field.startswith("is_"):
+            field_definitions[field] = (bool, Field(default=False))
+        elif field.endswith(("_no", "_date", "_name")):
+            field_definitions[field] = (str, Field(default=""))
+        elif field.endswith("amount"):
+            field_definitions[field] = (float, Field(default=None))
+        elif field.endswith("amounts"):
+            field_definitions[field] = (dict, Field(default={}))
+        else:
+            field_definitions[field] = (str, Field(default=""))
+
+    return create_model(name, **field_definitions)
+
+
+def create_dynamic_message(
+    resp: Dict[str, Any], fields: Optional[List[str]] = None
+) -> BaseModel:
+    if fields is None:
+        field_definitions = {field: (type(value), ...)
+                             for field, value in resp.items()}
+    else:
+        field_definitions = {
+            field: (type(resp[field]), ...) for field in fields if field in resp
+        }
+    DynamicMessage = create_model("DynamicMessage", **field_definitions)
+    return DynamicMessage(**resp)
+
+
+def create_task_key(category, task):
+    return f"{category}__{task}"
+
+
+---
+src/ocrorchestrator/utils/mixins.py
+---
+from typing import Any, Dict
+
+import structlog
+import torch
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+from langchain_core.messages import HumanMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_google_vertexai import ChatVertexAI
+from PIL import Image
+
+from ..config.app_config import TorchClassifierOutput
+from .constants import SAFETY_SETTINGS
+from .misc import generate_dynamic_model
+from .ml import get_device, load_pretrained_classifier
+
+log = structlog.get_logger()
+
+
+class VertexAILangchainMixin:
+    model: Any
+    prompt: Any
+    output_parser: Any
+
+    def load_llm(
+        self,
+        model_name: str,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        max_output_tokens: int,
+    ):
+        log.info("Loading Vertex AI LLM", model_name=model_name)
+        self.model = ChatVertexAI(
+            model_name=model_name,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_output_tokens=max_output_tokens,
+            safety_settings=SAFETY_SETTINGS,
+        )
+
+    def load_output_parser(self, fields: list[str]):
+        log.info("Loading output parser", fields=fields)
+        ExtractedOutputModel = generate_dynamic_model(fields)
+        self.output_parser = PydanticOutputParser(
+            pydantic_object=ExtractedOutputModel,
+        )
+
+    def load_prompt(self, prompt: str):
+        log.info("Loading prompt template")
+        self.prompt = prompt
+        self.prompt_temp = PromptTemplate(
+            template="\n".join(
+                [
+                    "{sys_prompt}",
+                    "{format}",
+                    "Analyze the image and return the fields in the right format.",
+                ]
+            ),
+            input_variables=[],
+            partial_variables={
+                "sys_prompt": prompt,
+                "format": self.output_parser.get_format_instructions(),
+            },
+        )
+        log.info("Prompt template loaded", prompt_preview=prompt[:100] + "...")
+
+    def predict(self, image_data: str) -> Dict[str, Any]:
+        image_message = {
+            "type": "image_url",
+            "image_url": {"url": image_data},
+        }
+        text_message = {
+            "type": "text",
+            "text": self.prompt_temp.format(),
+        }
+        message = HumanMessage(content=[image_message, text_message])
+        result = self.model.invoke([message])
+        log.info(
+            "Raw LLM prediction completed successfully",
+            result_preview=result.content[:100] + "...",
+        )
+        parsed = self.output_parser.parse(result.content)
+        return parsed.dict()
+
+
+class TorchClassifierMixin:
+    model: Any
+    tfms: Any
+
+    def load_model(
+        self,
+        model_name,
+        checkpoint,
+        class_names,
+    ):
+        log.info("Loading PyTorch classifier", model_name=model_name)
+        self.device = get_device()
+        self.model = load_pretrained_classifier(
+            model_name,
+            checkpoint,
+            len(class_names),
+            self.device,
+        )
+        self.model.to(self.device)
+        self.model.eval()
+
+    def load_tfms(self, img_size, norm_stats):
+        log.info("Loading image transformations", img_size=img_size)
+        self.tfms = transforms.Compose(
+            [
+                transforms.Resize(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=norm_stats["mean"],
+                    std=norm_stats["std"],
+                ),
+            ]
+        )
+
+    def predict(
+        self,
+        image: Image.Image,
+        class_names: list,
+    ) -> TorchClassifierOutput:
+        with torch.no_grad():
+            img_tensor = self.tfms(image).unsqueeze(0).to(self.device)
+            outputs = self.model(img_tensor).detach().cpu()
+            probabilities = F.softmax(outputs, dim=1)
+            confidence, predicted = torch.max(probabilities, 1)
+            result = TorchClassifierOutput(
+                prediction=class_names[predicted.item()],
+                conf=confidence.item(),
+                probs={
+                    class_names[i]: prob.item()
+                    for i, prob in enumerate(probabilities[0])
+                },
+            )
+        log.info(
+            "PyTorch classifier prediction completed",
+            prediction=result.prediction,
+            confidence=result.conf,
+        )
+        return result
+
+
+---
+src/ocrorchestrator/config/app_config.py
+---
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, root_validator
+
+
+class TorchClassifierOutput(BaseModel):
+    prediction: str
+    conf: float
+    probs: Dict[str, float]
+
+
+class TaskConfig(BaseModel):
+    processor: str
+    api: Optional[str] = None
+    model: Optional[str] = None
+    prompt_template: Optional[str] = None
+    params: List = Field(default_factory=list)
+    fields: Optional[List[str]] = None
+    classes: Optional[List[str]] = None
+    args: List[Any] = Field(default_factory=list)
+    kwargs: Dict[str, Any] = Field(default_factory=dict)
+
+    @root_validator(pre=True)
+    def extract_args_and_kwargs(cls, values):
+        params = values.get("params", [])
+        args = []
+        kwargs = {}
+        for param in params:
+            if isinstance(param, dict):
+                kwargs.update(param)
+            else:
+                args.append(param)
+        values["args"] = args
+        values["kwargs"] = kwargs
+        return values
+
+
+class GeneralConfig(BaseModel):
+    prompts_dir: str = Field(default="prompts")
+    models_dir: str = Field(default="models")
+    normalization_stats: Dict[str, List[float]] = Field(
+        default={
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+        }
+    )
+    log_model_output: bool = Field(default=False)
+
+
+class AppConfig(BaseModel):
+    general: GeneralConfig = Field(default_factory=GeneralConfig)
+    categories: Dict[str, OrderedDict[str, Optional[TaskConfig]]]
+
+    def iterate(self) -> tuple[str, str, TaskConfig]:
+        for category, category_config in self.categories.items():
+            for task_type, task_config in category_config.items():
+                if task_config is not None:
+                    yield category, task_type, task_config
+
+    def get_task_config(self, category: str, task: str) -> TaskConfig:
+        category_config = self.categories.get(category)
+        if not category_config:
+            raise ValueError(f"Category '{category}' not found.")
+
+        task_config = category_config.get(task)
+        if not task_config:
+            raise ValueError(
+                f"Task '{task}' not found for category '{category}'")
+
+        return task_config
+
+
+---
+src/ocrorchestrator/processors/factory.py
+---
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import AppException
+from ..processors import *  # noqa: F403
+from ..processors.base import BaseProcessor
+from ..repos import BaseRepo
+from ..utils.constants import ErrorCode
+
+
+class ProcessorFactory:
+    @staticmethod
+    def create_processor(
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ) -> BaseProcessor:
+        class_name = task_config.processor
+        try:
+            return globals()[class_name](task_config, general_config, repo)
+        except Exception as e:
+            raise AppException(
+                ErrorCode.INITIALIZATION_ERROR,
+                f"Unknown processor: {class_name}. Exc: {e}",
+            ) from e
+
+
+---
+src/ocrorchestrator/processors/pytorch.py
+---
+import os
+from typing import Any, Dict
+
+from ..config.app_config import (
+    GeneralConfig,
+    TaskConfig,
+)
+from ..datamodels.api_io import OCRRequest
+from ..repos import BaseRepo
+from ..utils.constants import IMG_SIZE
+from ..utils.img import base64_to_pil
+from ..utils.mixins import TorchClassifierMixin
+from .base import BaseProcessor
+
+
+class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        super().__init__(task_config, general_config, repo)
+        self.models_dir = general_config.models_dir
+        self.model_name = task_config.model.split("__")[0]
+        self.classes = self.task_config.classes
+
+    def _setup(self):
+        checkpoint = self.repo.download_obj(
+            os.path.join(
+                self.models_dir,
+                self.task_config.model,
+            )
+        )
+        self.load_model(
+            self.model_name,
+            checkpoint,
+            self.classes,
+        )
+
+        self.load_tfms(
+            self.task_config.kwargs.get("img_size", IMG_SIZE),
+            self.general_config.normalization_stats,
+        )
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        image = base64_to_pil(req.image)
+        op = self.predict(image, self.task_config.classes)
+        target = self.task_config.kwargs.get("target", self.classes[0])
+        is_valid = op.prediction == target
+        return {
+            "is_valid": is_valid,
+            "reason": op.prediction if not is_valid else None,
+            "confidence": op.conf,
+        }
+
+
+---
+src/ocrorchestrator/processors/__init__.py
+---
+from .base import BaseProcessor
+from .gradio import PaliGemmaGradioProcessor
+from .llm import LLMProcessor
+from .pytorch import DocumentValidationProcessor
+
+
+---
+src/ocrorchestrator/processors/base.py
+---
+import functools
+import traceback
+from typing import Any, Callable, Dict
+
+import structlog
+
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import (
+    AppException,
+    OCRRequest,
+    OCRRequestOffline,
+)
+from ..repos import BaseRepo
+from ..utils.constants import ErrorCode
+
+log = structlog.get_logger()
+
+
+def process_error_handler(func: Callable):
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            if isinstance(e, AppException):
+                raise e
+            error_code = ErrorCode.PROCESSING_ERROR
+            log.error(f"Processing error in {func.__name__}", exc_info=True)
+            raise ProcessorException(error_code, traceback.format_exc()) from e
+
+    return wrapper
+
+
+class BaseProcessor:
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        self.task_config = task_config
+        self.general_config = general_config
+        self.repo = repo
+        self.log_model_output = general_config.log_model_output
+
+    def _setup(self) -> None:
+        raise NotImplementedError
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def _process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    @process_error_handler
+    def process(self, req: OCRRequest) -> Dict[str, Any]:
+        log.info("--- Processing request ---")
+        result = self._process(req)
+        if self.log_model_output:
+            log.info("Model output", output=result)
+        return result
+
+    @process_error_handler
+    def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
+        log.info("--- Processing offline request ---")
+        result = self._process_offline(req)
+        if self.log_model_output:
+            log.info("Model output", output=result)
+        return result
+
+
+class ProcessorException(AppException):
+    pass
+
+
+---
+src/ocrorchestrator/processors/api.py
+---
+from string import Template
+from typing import Any, Dict
+
+import requests
+
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import AppException, OCRRequest
+from ..repos import BaseRepo
+from ..utils.constants import ErrorCode
+from .base import BaseProcessor
+
+
+class InputFormatter:
+    def __init__(self, format_template: Dict[str, Any]):
+        self.format_template = format_template
+
+    def format(self, data: Any) -> Dict[str, Any]:
+        def _format_value(value):
+            if isinstance(value, str):
+                return Template(value).safe_substitute(data.__dict__)
+            elif isinstance(value, dict):
+                return {k: _format_value(v) for k, v in value.items()}
+            elif isinstance(value, list):
+                return [_format_value(item) for item in value]
+            return value
+
+        return _format_value(self.format_template)
+
+
+class ApiProcessor(BaseProcessor):
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        super().__init__(task_config, general_config, repo)
+        self.api = task_config.api
+        self.input_format = InputFormatter(task_config.kwargs)
+
+    def _setup(self):
+        self.client = requests.Session()
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        # Format the input according to the template
+        formatted_input = self.input_format.format(req)
+
+        try:
+            response = self.client.post(self.api, json=formatted_input)
+            response.raise_for_status()
+            result = response.json()
+        except requests.RequestException as e:
+            raise AppException(ErrorCode.API_CALL_ERROR,
+                               f"API call error: {str(e)}")
+
+        return self._result_parser(result)
+
+    def _result_parser(self, raw: Any) -> Dict[str, Any]:
+        return raw
+
+    def cleanup(self):
+        self.client.close()
+
+
+---
+src/ocrorchestrator/processors/gradio.py
+---
+from tempfile import NamedTemporaryFile
+from typing import Any, Dict
+
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import OCRRequest
+from ..repos import BaseRepo
+from ..utils.img import base64_to_pil
+from .base import BaseProcessor
+
+
+class GradioProcessor(BaseProcessor):
+    client: Any
+
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        super().__init__(task_config, general_config, repo)
+        self.api = task_config.api
+        self.model = task_config.model
+
+    def _setup(self):
+        from gradio_client import Client
+
+        self.client = Client(self.model)
+
+    def _result_parser(self, raw: Any) -> Dict[str, Any]:
+        return raw
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        from gradio_client import file
+
+        image = base64_to_pil(req.image)
+
+        with NamedTemporaryFile(delete=True, suffix=".jpg") as fp:
+            image.save(fp.name)
+            result = self.client.predict(
+                file(fp.name),
+                *self.task_config.args,
+                api_name=self.api,
+                **self.task_config.kwargs,
+            )
+
+            return self._result_parser(result)
+
+
+class PaliGemmaGradioProcessor(GradioProcessor):
+    def _result_parser(self, raw: Any) -> Dict[str, Any]:
+        try:
+            return {"output": raw[0]["value"][0]["token"]}
+        except Exception as e:
+            return {"error": str(e)}
+
+
+---
+src/ocrorchestrator/processors/llm.py
+---
+import os
+from typing import Any, Dict
+
+import structlog
+
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import OCRRequest
+from ..repos import BaseRepo
+from ..utils.mixins import VertexAILangchainMixin
+from .base import BaseProcessor
+
+log = structlog.get_logger()
+
+
+class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        super().__init__(task_config, general_config, repo)
+        self.prompts_dir = general_config.prompts_dir
+        self.prompt_file = task_config.prompt_template
+        self.model_name = task_config.model
+        self.fields = task_config.fields
+        self.model_config = {
+            "temperature": task_config.kwargs.get("temperature", 0.1),
+            "top_p": task_config.kwargs.get("top_p", 0.4),
+            "top_k": task_config.kwargs.get("top_k", 28),
+            "max_output_tokens": task_config.kwargs.get(
+                "max_output_tokens",
+                2048,
+            ),
+        }
+
+    def _setup(self):
+        prompt = self.repo.get_text(
+            os.path.join(
+                self.prompts_dir,
+                self.prompt_file,
+            )
+        )
+        self.load_llm(model_name=self.model_name, **self.model_config)
+        self.load_output_parser(self.fields)
+        self.load_prompt(prompt)
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        image_data = f"data:image/PNG;base64,{req.image.decode('utf-8')}"
+        return self.predict(image_data)
+
+
+---
+src/ocrorchestrator/managers/processor.py
+---
+from typing import Dict
+
+import structlog
+
+from ..config.app_config import AppConfig
+from ..processors import BaseProcessor
+from ..processors.factory import ProcessorFactory
+from ..repos import BaseRepo
+from ..utils.misc import create_task_key
+
+log = structlog.get_logger()
+
+
+class ProcessorManager:
+    def __init__(self, app_config: AppConfig, repo: BaseRepo):
+        self.app_config = app_config
+        self.repo = repo
+        self.processors: Dict[str, BaseProcessor] = {}
+        self._initialize()
+
+    def _initialize(self):
+        log.info("++++ Initializing processors ++++")
+        for cat, task, task_config in self.app_config.iterate():
+            key = create_task_key(cat, task)
+            processor = ProcessorFactory.create_processor(
+                task_config,
+                self.app_config.general,
+                self.repo,
+            )
+            log.info(f"Setting up processor: {processor.__class__.__name__}")
+            processor._setup()
+            self.processors[key] = processor
+        log.info("++++ Processors initialized ++++")
+
+    def refresh(self):
+        log.info("++++ Refreshing processors ++++")
+        self.processors.clear()
+        self._initialize()
+
+
+---
+src/ocrorchestrator/repos/gcs.py
+---
+import json
+from typing import Any, Dict
+
+import yaml
+
+from .base import BaseRepo
+
+
+class GCSRepo(BaseRepo):
+    def __init__(self, bucket_name: str):
+        from google.cloud import storage
+
+        self.client = storage.Client()
+        self.bucket = self.client.bucket(bucket_name)
+
+    def _get_yaml(self, path: str) -> Dict[str, Any]:
+        blob = self.bucket.blob(path)
+        content = blob.download_as_text()
+        return yaml.safe_load(content)
+
+    def _get_json(self, path: str) -> Dict[str, Any]:
+        blob = self.bucket.blob(path)
+        content = blob.download_as_text()
+        return json.loads(content)
+
+    def _get_text(self, path: str) -> str:
+        blob = self.bucket.blob(path)
+        return blob.download_as_text()
+
+    def _download_obj(self, path: str, local_path: str) -> None:
+        blob = self.bucket.blob(path)
+        blob.download_to_filename(local_path)
+        return local_path
+
+
+---
+src/ocrorchestrator/repos/factory.py
+---
+import structlog
+
+from ..datamodels.api_io import AppException
+from ..repos import BaseRepo, GCSRepo, LocalRepo
+from ..utils.constants import ErrorCode
+
+log = structlog.get_logger()
+
+
+class RepoFactory:
+    @staticmethod
+    def create_repo(name: str, **kwargs) -> BaseRepo:
+        try:
+            if name == "gcs":
+                return GCSRepo(**kwargs)
+            elif name == "local":
+                return LocalRepo(**kwargs)
+            else:
+                raise AppException(
+                    ErrorCode.REPO_INITIALIZATION_ERROR,
+                    f"Unknown repo: {name}",
+                )
+        except Exception as e:
+            if isinstance(e, AppException):
+                raise e
+            log.error(
+                f"Failed to init repository with kwargs: {kwargs}",
+                exc_info=True,
+                repo=name,
+            )
+            raise AppException(
+                ErrorCode.REPO_INITIALIZATION_ERROR,
+                f"Failed to initialize {name} repo: {str(e)}",
+            )
+
+
+---
+src/ocrorchestrator/repos/__init__.py
+---
+from .base import BaseRepo
+from .gcs import GCSRepo
+from .local import LocalRepo
+
+
+---
+src/ocrorchestrator/repos/base.py
+---
+import functools
+import traceback
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Dict
+
+import structlog
+
+from ..datamodels.api_io import AppException
+from ..utils.constants import ErrorCode
+
+log = structlog.get_logger()
+
+
+def repo_error_handler(func: Callable):
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            if isinstance(e, AppException):
+                raise e
+            error_code = (
+                ErrorCode.REPO_GET_ERROR
+                if func.__name__.startswith("get_")
+                else ErrorCode.REPO_OBJECT_DOWNLOAD_ERROR
+            )
+            log.error(
+                f"Repo operation error in {func.__name__}",
+                exc_info=True,
+            )
+            raise RepoException(error_code, traceback.format_exc()) from e
+
+    return wrapper
+
+
+class BaseRepo(ABC):
+    @abstractmethod
+    def _get_yaml(self, path: str) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def _get_json(self, path: str) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def _get_text(self, path: str) -> str:
+        pass
+
+    @abstractmethod
+    def _download_obj(self, path: str, local_path: str) -> None:
+        pass
+
+    @repo_error_handler
+    def get_obj(self, path: str) -> str:
+        if path.endswith(".yaml"):
+            return self._get_yaml(path)
+        elif path.endswith(".json"):
+            return self._get_json(path)
+        return self._get_text(path)
+
+    @repo_error_handler
+    def download_obj(self, path: str, local_path: str) -> None:
+        self._download_obj(path, local_path)
+
+
+class RepoException(AppException):
+    pass
+
+
+---
+src/ocrorchestrator/repos/local.py
+---
+import json
+from typing import Any, Dict, Optional
+
+import yaml
+
+from .base import BaseRepo
+
+
+class LocalRepo(BaseRepo):
+    def __init__(self, base_path: str):
+        self.base_path = base_path
+
+    def _get_yaml(self, path: str) -> Dict[str, Any]:
+        full_path = f"{self.base_path}/{path}"
+        with open(full_path, "r") as file:
+            return yaml.safe_load(file)
+
+    def _get_json(self, path: str) -> Dict[str, Any]:
+        full_path = f"{self.base_path}/{path}"
+        with open(full_path, "r") as file:
+            return json.load(file)
+
+    def _get_text(self, path: str) -> str:
+        full_path = f"{self.base_path}/{path}"
+        with open(full_path, "r") as file:
+            return file.read()
+
+    def _download_obj(self, path: str, local_path: Optional[str] = None) -> None:
+        full_path = f"{self.base_path}/{path}"
+        return full_path
+
+
+---

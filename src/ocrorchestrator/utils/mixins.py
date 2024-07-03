@@ -31,6 +31,7 @@ class VertexAILangchainMixin:
         top_k: int,
         max_output_tokens: int,
     ):
+        log.info("Loading Vertex AI LLM", model_name=model_name)
         self.model = ChatVertexAI(
             model_name=model_name,
             temperature=temperature,
@@ -41,11 +42,14 @@ class VertexAILangchainMixin:
         )
 
     def load_output_parser(self, fields: list[str]):
+        log.info("Loading output parser", fields=fields)
         ExtractedOutputModel = generate_dynamic_model(fields)
         self.output_parser = PydanticOutputParser(
-            pydantic_object=ExtractedOutputModel)
+            pydantic_object=ExtractedOutputModel,
+        )
 
     def load_prompt(self, prompt: str):
+        log.info("Loading prompt template")
         self.prompt = prompt
         self.prompt_temp = PromptTemplate(
             template="\n".join(
@@ -61,6 +65,7 @@ class VertexAILangchainMixin:
                 "format": self.output_parser.get_format_instructions(),
             },
         )
+        log.info("Prompt template loaded", prompt_preview=prompt[:100] + "...")
 
     def predict(self, image_data: str) -> Dict[str, Any]:
         image_message = {
@@ -73,6 +78,10 @@ class VertexAILangchainMixin:
         }
         message = HumanMessage(content=[image_message, text_message])
         result = self.model.invoke([message])
+        log.info(
+            "Raw LLM prediction completed successfully",
+            result_preview=result.content[:100] + "...",
+        )
         parsed = self.output_parser.parse(result.content)
         return parsed.dict()
 
@@ -87,6 +96,7 @@ class TorchClassifierMixin:
         checkpoint,
         class_names,
     ):
+        log.info("Loading PyTorch classifier", model_name=model_name)
         self.device = get_device()
         self.model = load_pretrained_classifier(
             model_name,
@@ -98,6 +108,7 @@ class TorchClassifierMixin:
         self.model.eval()
 
     def load_tfms(self, img_size, norm_stats):
+        log.info("Loading image transformations", img_size=img_size)
         self.tfms = transforms.Compose(
             [
                 transforms.Resize(img_size),
@@ -119,7 +130,7 @@ class TorchClassifierMixin:
             outputs = self.model(img_tensor).detach().cpu()
             probabilities = F.softmax(outputs, dim=1)
             confidence, predicted = torch.max(probabilities, 1)
-            return TorchClassifierOutput(
+            result = TorchClassifierOutput(
                 prediction=class_names[predicted.item()],
                 conf=confidence.item(),
                 probs={
@@ -127,3 +138,9 @@ class TorchClassifierMixin:
                     for i, prob in enumerate(probabilities[0])
                 },
             )
+        log.info(
+            "PyTorch classifier prediction completed",
+            prediction=result.prediction,
+            confidence=result.conf,
+        )
+        return result

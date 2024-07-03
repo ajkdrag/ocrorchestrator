@@ -15,12 +15,14 @@ log = structlog.get_logger()
 
 
 def process_request(req: OCRRequest, func: Callable) -> AppResponse:
+    log.info("#### Processing request ####")
     try:
         response = func(req)
         message = create_dynamic_message(response, req.fields)
+        log.info("#### Request processed successfully ####")
         return AppResponse(status="OK", status_code=200, message=message)
     except Exception as e:
-        log.error(f"Error in {func.__name__}: {str(e)}")
+        log.error(f"Error in {func.__name__}", exc_info=True)
         if isinstance(e, AppException):
             raise e
         error_code = ErrorCode.INTERNAL_SERVER_ERROR
