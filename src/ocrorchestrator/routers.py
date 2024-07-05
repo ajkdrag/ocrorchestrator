@@ -4,8 +4,13 @@ from typing import Callable
 import structlog
 from fastapi import APIRouter, Depends
 
-from .datamodels.api_io import AppException, AppResponse, OCRRequest
-from .deps import get_processor
+from .datamodels.api_io import (
+    AppException,
+    AppResponse,
+    ConfigUpdateRequest,
+    OCRRequest,
+)
+from .deps import get_processor, update_app_state
 from .processors import BaseProcessor
 from .utils.constants import ErrorCode
 from .utils.misc import create_dynamic_message
@@ -15,17 +20,24 @@ log = structlog.get_logger()
 
 
 def process_request(req: OCRRequest, func: Callable) -> AppResponse:
-    log.info("#### Processing request ####")
     try:
         response = func(req)
-        message = create_dynamic_message(response, req.fields)
-        log.info("#### Request processed successfully ####")
-        return AppResponse(status="OK", status_code=200, message=message)
+        if hasattr(req, "fields"):
+            response = create_dynamic_message(response, req.fields)
+        log.info("--- Request processed successfully ---")
+        return AppResponse(status="OK", status_code=200, message=response)
     except Exception as e:
-        log.error(f"Error in {func.__name__}", exc_info=True)
         if isinstance(e, AppException):
             raise e
+
         error_code = ErrorCode.INTERNAL_SERVER_ERROR
+        log.error(
+            f"Error in {func.__name__}",
+            status_code=error_code.status_code,
+            status=error_code.name,
+            exc_info=True,
+        )
+
         raise AppException(error_code, traceback.format_exc()) from e
 
 
@@ -43,3 +55,16 @@ async def predict_offline(
     processor: BaseProcessor = Depends(get_processor),
 ):
     return process_request(req, processor.process_offline)
+
+
+@ocr_router.post("/update_config")
+async def update_config(
+    config_update: ConfigUpdateRequest,
+    update_state=Depends(update_app_state),
+):
+    if config_update.config:
+        return process_request(config_update.config, update_state)
+    elif config_update.config_file:
+        return process_request(config_update.config_file, update_state)
+    else:
+        raise AppException(ErrorCode.BAD_REQUEST, "No valid config provided")

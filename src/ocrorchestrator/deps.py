@@ -1,3 +1,5 @@
+from typing import Union
+
 from fastapi import Depends, Request
 
 from .config.app_config import AppConfig
@@ -33,3 +35,19 @@ def get_processor(
             f"No processor found for {key}",
         )
     return processor
+
+
+def update_app_state(
+    req: Request,
+    config: Union[str, dict] = None,
+):
+    if isinstance(config, dict):
+        new_config = AppConfig(**config)
+    elif isinstance(config, str):
+        new_config = AppConfig(**req.app.state.repo.get_obj(config))
+    else:
+        raise AppException(ErrorCode.BAD_REQUEST, "Invalid config provided")
+
+    req.app.state.config = new_config
+    req.app.state.proc_manager.refresh(new_config)
+    return new_config

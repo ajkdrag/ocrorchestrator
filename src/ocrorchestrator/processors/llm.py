@@ -35,7 +35,7 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         }
 
     def _setup(self):
-        prompt = self.repo.get_text(
+        prompt = self.repo.get_obj(
             os.path.join(
                 self.prompts_dir,
                 self.prompt_file,
@@ -46,5 +46,5 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         self.load_prompt(prompt)
 
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        image_data = f"data:image/PNG;base64,{req.image.decode('utf-8')}"
+        image_data = f"data:image/PNG;base64,{req.image}"
         return self.predict(image_data)

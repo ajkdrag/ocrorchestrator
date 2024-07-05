@@ -2,12 +2,15 @@ from string import Template
 from typing import Any, Dict
 
 import requests
+import structlog
 
 from ..config.app_config import GeneralConfig, TaskConfig
 from ..datamodels.api_io import AppException, OCRRequest
 from ..repos import BaseRepo
 from ..utils.constants import ErrorCode
 from .base import BaseProcessor
+
+log = structlog.get_logger()
 
 
 class InputFormatter:
@@ -42,15 +45,28 @@ class ApiProcessor(BaseProcessor):
         self.client = requests.Session()
 
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        # Format the input according to the template
         formatted_input = self.input_format.format(req)
 
         try:
+            log.info("Sending API request", api_endpoint=self.api)
             response = self.client.post(self.api, json=formatted_input)
             response.raise_for_status()
             result = response.json()
+            log.info(
+                "API request successful",
+                api_endpoint=self.api,
+                status_code=response.status_code,
+            )
         except requests.RequestException as e:
-            raise AppException(ErrorCode.API_CALL_ERROR,
+            error_code = ErrorCode.API_CALL_ERROR
+            log.error(
+                "API request failed",
+                api_endpoint=self.api,
+                status_code=error_code.status_code,
+                status=error_code.name,
+                exc_info=True,
+            )
+            raise AppException(error_code,
                                f"API call error: {str(e)}")
 
         return self._result_parser(result)

@@ -19,7 +19,7 @@ class ProcessorManager:
         self._initialize()
 
     def _initialize(self):
-        log.info("++++ Initializing processors ++++")
+        log.info("**** Initializing processors ****")
         for cat, task, task_config in self.app_config.iterate():
             key = create_task_key(cat, task)
             processor = ProcessorFactory.create_processor(
@@ -27,12 +27,28 @@ class ProcessorManager:
                 self.app_config.general,
                 self.repo,
             )
-            log.info(f"Setting up processor: {processor.__class__.__name__}")
+            log.info("Setting up processor", processor=type(processor).__name__)
             processor._setup()
             self.processors[key] = processor
-        log.info("++++ Processors initialized ++++")
+        log.info("**** Processors initialized ****")
 
-    def refresh(self):
-        log.info("++++ Refreshing processors ++++")
+    def refresh(self, new_config: AppConfig = None):
+        log.info("**** Refreshing processors ****")
+        self.cleanup()
         self.processors.clear()
+        if new_config:
+            self.app_config = new_config
         self._initialize()
+
+    def cleanup(self):
+        log.info("**** Cleaning up processors ****")
+        for key, processor in self.processors.items():
+            try:
+                processor.cleanup()
+            except Exception:
+                log.error(
+                    "Error during processor cleanup",
+                    processor_key=key,
+                    processor_type=type(processor).__name__,
+                    exc_info=True,
+                )

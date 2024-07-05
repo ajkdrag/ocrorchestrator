@@ -24,8 +24,17 @@ def process_error_handler(func: Callable):
         except Exception as e:
             if isinstance(e, AppException):
                 raise e
-            error_code = ErrorCode.PROCESSING_ERROR
-            log.error(f"Processing error in {func.__name__}", exc_info=True)
+            error_code = (
+                ErrorCode.PROCESS_CLEANUP_ERROR
+                if func.__name__.startswith("cleanup")
+                else ErrorCode.PROCESSING_ERROR
+            )
+            log.error(
+                f"Process operation error in {func.__name__}",
+                status_code=error_code.status_code,
+                status=error_code.name,
+                exc_info=True,
+            )
             raise ProcessorException(error_code, traceback.format_exc()) from e
 
     return wrapper
@@ -53,8 +62,12 @@ class BaseProcessor:
         raise NotImplementedError
 
     @process_error_handler
+    def cleanup(self) -> None:
+        pass
+
+    @process_error_handler
     def process(self, req: OCRRequest) -> Dict[str, Any]:
-        log.info("--- Processing request ---")
+        log.info("--- Processing online request ---")
         result = self._process(req)
         if self.log_model_output:
             log.info("Model output", output=result)

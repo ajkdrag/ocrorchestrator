@@ -1,10 +1,15 @@
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from ..utils.constants import ErrorCode
+
+
+class ConfigUpdateRequest(BaseModel):
+    config: Optional[Dict] = None
+    config_file: Optional[str] = None
 
 
 class OCRRequest(BaseModel):
@@ -33,6 +38,6 @@ class AppException(HTTPException):
     def __init__(self, error_code: ErrorCode, detail: str = None):
         super().__init__(
             status_code=error_code.status_code,
-            detail=detail or error_code.message,
+            detail=f"{error_code.name}: {detail or error_code.message}",
         )
         self.status = error_code.name

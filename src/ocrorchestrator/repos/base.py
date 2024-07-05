@@ -1,6 +1,7 @@
 import functools
 import traceback
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Callable, Dict
 
 import structlog
@@ -26,6 +27,8 @@ def repo_error_handler(func: Callable):
             )
             log.error(
                 f"Repo operation error in {func.__name__}",
+                status_code=error_code.status_code,
+                status=error_code.name,
                 exc_info=True,
             )
             raise RepoException(error_code, traceback.format_exc()) from e
@@ -34,6 +37,11 @@ def repo_error_handler(func: Callable):
 
 
 class BaseRepo(ABC):
+    def __init__(self, remote_path: str, local_dir: str):
+        self.remote_path = remote_path
+        self.local_dir = Path(local_dir).resolve()
+        self.local_dir.mkdir(parents=True, exist_ok=True)
+
     @abstractmethod
     def _get_yaml(self, path: str) -> Dict[str, Any]:
         pass
@@ -47,7 +55,7 @@ class BaseRepo(ABC):
         pass
 
     @abstractmethod
-    def _download_obj(self, path: str, local_path: str) -> None:
+    def _download_obj(self, path: str) -> None:
         pass
 
     @repo_error_handler
@@ -59,8 +67,8 @@ class BaseRepo(ABC):
         return self._get_text(path)
 
     @repo_error_handler
-    def download_obj(self, path: str, local_path: str) -> None:
-        self._download_obj(path, local_path)
+    def download_obj(self, path: str) -> None:
+        return self._download_obj(path)
 
 
 class RepoException(AppException):

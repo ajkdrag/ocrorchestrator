@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,10 +13,8 @@ from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
 
-# constants
-PKG_ROOT = Path(__file__).parent
-PROJ_ROOT = PKG_ROOT.parent.parent
-config_path = "configs/config_v1.yaml"
+repo_type = os.environ.get("REPO_TYPE", "local")
+config_path = os.environ.get("CONFIG_PATH", "configs/config_v1.yaml")
 
 log = structlog.get_logger()
 
@@ -23,22 +22,27 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
-    base_path = PROJ_ROOT.joinpath("data/my-bucket").as_posix()
-    repo = RepoFactory.create_repo("local", base_path=base_path)
-    config = AppConfig(**repo.get_yaml(config_path))
+    repo = RepoFactory.create_repo(repo_type)
+    config = AppConfig(**repo.get_obj(config_path))
     proc_manager = ProcessorManager(config, repo)
     app.state.repo = repo
     app.state.config = config
     app.state.proc_manager = proc_manager
     yield
     log.info("**** Shutting down application ****")
+    proc_manager.cleanup()
     app.state.repo = None
     app.state.config = None
     app.state.proc_manager = None
 
 
 async def ocr_exception_handler(request: Request, exc: AppException):
-    log.error(f"Exception occurred: {exc.detail}", status_code=exc.status_code)
+    log.error(
+        f"Exception occurred: {exc.detail}",
+        status_code=exc.status_code,
+        status=exc.status,
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=AppResponse(

@@ -1,3 +1,4 @@
+from .api import ApiProcessor
 from .base import BaseProcessor
 from .gradio import PaliGemmaGradioProcessor
 from .llm import LLMProcessor

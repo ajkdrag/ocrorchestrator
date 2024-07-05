@@ -56,17 +56,23 @@ log = structlog.get_logger()
 
 
 def process_request(req: OCRRequest, func: Callable) -> AppResponse:
-    log.info("#### Processing request ####")
     try:
         response = func(req)
         message = create_dynamic_message(response, req.fields)
-        log.info("#### Request processed successfully ####")
+        log.info("--- Request processed successfully ---")
         return AppResponse(status="OK", status_code=200, message=message)
     except Exception as e:
-        log.error(f"Error in {func.__name__}", exc_info=True)
         if isinstance(e, AppException):
             raise e
+
         error_code = ErrorCode.INTERNAL_SERVER_ERROR
+        log.error(
+            f"Error in {func.__name__}",
+            status_code=error_code.status_code,
+            status=error_code.name,
+            exc_info=True,
+        )
+
         raise AppException(error_code, traceback.format_exc()) from e
 
 
@@ -129,6 +135,7 @@ def get_processor(
 ---
 src/ocrorchestrator/main.py
 ---
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -143,10 +150,8 @@ from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
 
-# constants
-PKG_ROOT = Path(__file__).parent
-PROJ_ROOT = PKG_ROOT.parent.parent
-config_path = "configs/config_v1.yaml"
+repo_type = os.environ.get("REPO_TYPE", "local")
+config_path = os.environ.get("CONFIG_PATH", "configs/config_v1.yaml")
 
 log = structlog.get_logger()
 
@@ -154,8 +159,7 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
-    base_path = PROJ_ROOT.joinpath("data/my-bucket").as_posix()
-    repo = RepoFactory.create_repo("local", base_path=base_path)
+    repo = RepoFactory.create_repo(repo_type)
     config = AppConfig(**repo.get_yaml(config_path))
     proc_manager = ProcessorManager(config, repo)
     app.state.repo = repo
@@ -163,13 +167,19 @@ async def lifespan(app: FastAPI):
     app.state.proc_manager = proc_manager
     yield
     log.info("**** Shutting down application ****")
+    proc_manager.cleanup()
     app.state.repo = None
     app.state.config = None
     app.state.proc_manager = None
 
 
 async def ocr_exception_handler(request: Request, exc: AppException):
-    log.error(f"Exception occurred: {exc.detail}", status_code=exc.status_code)
+    log.error(
+        f"Exception occurred: {exc.detail}",
+        status_code=exc.status_code,
+        status=exc.status,
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=AppResponse(
@@ -230,7 +240,7 @@ class AppException(HTTPException):
     def __init__(self, error_code: ErrorCode, detail: str = None):
         super().__init__(
             status_code=error_code.status_code,
-            detail=detail or error_code.message,
+            detail=f"{error_code.name}: {detail or error_code.message}",
         )
         self.status = error_code.name
 
@@ -351,12 +361,15 @@ class LoggerMiddleware(BaseHTTPMiddleware):
 src/ocrorchestrator/utils/constants.py
 ---
 from enum import Enum
+from pathlib import Path
 
 import torchvision.models as models
 from langchain_google_vertexai import HarmBlockThreshold as HT
 from vertexai.generative_models import HarmCategory as HC
 
 IMG_SIZE = (224, 224)
+PKG_ROOT = Path(__file__).parent.parent
+PROJ_ROOT = PKG_ROOT.parent.parent
 
 PRETRAINED_MODELS = {
     "resnet50": models.resnet50,
@@ -369,15 +382,15 @@ class ErrorCode(Enum):
     BAD_REQUEST = (400, "Bad Request")
     UNAUTHORIZED = (401, "Unauthorized")
     NOT_FOUND = (404, "Not Found")
+    PROCESSOR_NOT_FOUND = (405, "Processor Not Found")
     INTERNAL_SERVER_ERROR = (500, "Internal Server Error")
-    PROCESSOR_NOT_FOUND = (501, "Processor Not Found")
     PROCESSING_ERROR = (502, "Processing Error")
     INITIALIZATION_ERROR = (503, "Initialization Error")
+    PROCESS_CLEANUP_ERROR = (504, "Cleanup Error")
     API_CALL_ERROR = (601, "Api Call Error")
     REPO_GET_ERROR = (701, "Error reading file")
-    REPO_GET_ERROR = (702, "Error reading file")
-    REPO_OBJECT_DOWNLOAD_ERROR = (703, "Error downloading object")
-    REPO_INITIALIZATION_ERROR = (704, "Error initializing repository")
+    REPO_OBJECT_DOWNLOAD_ERROR = (702, "Error downloading object")
+    REPO_INITIALIZATION_ERROR = (703, "Error initializing repository")
 
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
@@ -757,6 +770,7 @@ class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
 ---
 src/ocrorchestrator/processors/__init__.py
 ---
+from .api import ApiProcessor
 from .base import BaseProcessor
 from .gradio import PaliGemmaGradioProcessor
 from .llm import LLMProcessor
@@ -792,8 +806,17 @@ def process_error_handler(func: Callable):
         except Exception as e:
             if isinstance(e, AppException):
                 raise e
-            error_code = ErrorCode.PROCESSING_ERROR
-            log.error(f"Processing error in {func.__name__}", exc_info=True)
+            error_code = (
+                ErrorCode.PROCESS_CLEANUP_ERROR
+                if func.__name__.startswith("cleanup")
+                else ErrorCode.PROCESSING_ERROR
+            )
+            log.error(
+                f"Process operation error in {func.__name__}",
+                status_code=error_code.status_code,
+                status=error_code.name,
+                exc_info=True,
+            )
             raise ProcessorException(error_code, traceback.format_exc()) from e
 
     return wrapper
@@ -821,8 +844,12 @@ class BaseProcessor:
         raise NotImplementedError
 
     @process_error_handler
+    def cleanup(self) -> None:
+        pass
+
+    @process_error_handler
     def process(self, req: OCRRequest) -> Dict[str, Any]:
-        log.info("--- Processing request ---")
+        log.info("--- Processing online request ---")
         result = self._process(req)
         if self.log_model_output:
             log.info("Model output", output=result)
@@ -848,12 +875,15 @@ from string import Template
 from typing import Any, Dict
 
 import requests
+import structlog
 
 from ..config.app_config import GeneralConfig, TaskConfig
 from ..datamodels.api_io import AppException, OCRRequest
 from ..repos import BaseRepo
 from ..utils.constants import ErrorCode
 from .base import BaseProcessor
+
+log = structlog.get_logger()
 
 
 class InputFormatter:
@@ -888,15 +918,28 @@ class ApiProcessor(BaseProcessor):
         self.client = requests.Session()
 
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        # Format the input according to the template
         formatted_input = self.input_format.format(req)
 
         try:
+            log.info("Sending API request", api_endpoint=self.api)
             response = self.client.post(self.api, json=formatted_input)
             response.raise_for_status()
             result = response.json()
+            log.info(
+                "API request successful",
+                api_endpoint=self.api,
+                status_code=response.status_code,
+            )
         except requests.RequestException as e:
-            raise AppException(ErrorCode.API_CALL_ERROR,
+            error_code = ErrorCode.API_CALL_ERROR
+            log.error(
+                "API request failed",
+                api_endpoint=self.api,
+                status_code=error_code.status_code,
+                status=error_code.name,
+                exc_info=True,
+            )
+            raise AppException(error_code,
                                f"API call error: {str(e)}")
 
         return self._result_parser(result)
@@ -1018,7 +1061,7 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         self.load_prompt(prompt)
 
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        image_data = f"data:image/PNG;base64,{req.image.decode('utf-8')}"
+        image_data = f"data:image/PNG;base64,{req.image}"
         return self.predict(image_data)
 
 
@@ -1046,7 +1089,7 @@ class ProcessorManager:
         self._initialize()
 
     def _initialize(self):
-        log.info("++++ Initializing processors ++++")
+        log.info("**** Initializing processors ****")
         for cat, task, task_config in self.app_config.iterate():
             key = create_task_key(cat, task)
             processor = ProcessorFactory.create_processor(
@@ -1054,15 +1097,29 @@ class ProcessorManager:
                 self.app_config.general,
                 self.repo,
             )
-            log.info(f"Setting up processor: {processor.__class__.__name__}")
+            log.info("Setting up processor",
+                     processor=type(processor).__name__)
             processor._setup()
             self.processors[key] = processor
-        log.info("++++ Processors initialized ++++")
+        log.info("**** Processors initialized ****")
 
     def refresh(self):
-        log.info("++++ Refreshing processors ++++")
+        log.info("**** Refreshing processors ****")
         self.processors.clear()
         self._initialize()
+
+    def cleanup(self):
+        log.info("**** Cleaning up processors ****")
+        for key, processor in self.processors.items():
+            try:
+                processor.cleanup()
+            except Exception:
+                log.error(
+                    "Error during processor cleanup",
+                    processor_key=key,
+                    processor_type=type(processor).__name__,
+                    exc_info=True,
+                )
 
 
 ---
@@ -1077,11 +1134,12 @@ from .base import BaseRepo
 
 
 class GCSRepo(BaseRepo):
-    def __init__(self, bucket_name: str):
+    def __init__(self, remote_path: str, local_dir: str):
         from google.cloud import storage
 
+        super().__init__(remote_path, local_dir)
         self.client = storage.Client()
-        self.bucket = self.client.bucket(bucket_name)
+        self.bucket = self.client.bucket(self.remote_path)
 
     def _get_yaml(self, path: str) -> Dict[str, Any]:
         blob = self.bucket.blob(path)
@@ -1097,32 +1155,44 @@ class GCSRepo(BaseRepo):
         blob = self.bucket.blob(path)
         return blob.download_as_text()
 
-    def _download_obj(self, path: str, local_path: str) -> None:
+    def _download_obj(self, path: str) -> None:
         blob = self.bucket.blob(path)
-        blob.download_to_filename(local_path)
-        return local_path
+        local_file_path = self.local_dir / path
+        local_file_path.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(local_file_path))
+        return str(local_file_path)
 
 
 ---
 src/ocrorchestrator/repos/factory.py
 ---
+import os
+
 import structlog
 
 from ..datamodels.api_io import AppException
 from ..repos import BaseRepo, GCSRepo, LocalRepo
-from ..utils.constants import ErrorCode
+from ..utils.constants import PROJ_ROOT, ErrorCode
 
 log = structlog.get_logger()
 
 
 class RepoFactory:
     @staticmethod
-    def create_repo(name: str, **kwargs) -> BaseRepo:
+    def create_repo(
+        name: str,
+        remote_path: str = None,
+        **kwargs,
+    ) -> BaseRepo:
         try:
+            local_dir = PROJ_ROOT.joinpath("data/local").as_posix()
+            remote = os.environ.get("REMOTE_PATH", remote_path)
+            local = os.environ.get("LOCAL_DIR", local_dir)
+
             if name == "gcs":
-                return GCSRepo(**kwargs)
+                return GCSRepo(remote, local, **kwargs)
             elif name == "local":
-                return LocalRepo(**kwargs)
+                return LocalRepo(remote, remote, **kwargs)
             else:
                 raise AppException(
                     ErrorCode.REPO_INITIALIZATION_ERROR,
@@ -1131,13 +1201,15 @@ class RepoFactory:
         except Exception as e:
             if isinstance(e, AppException):
                 raise e
+            error_code = ErrorCode.REPO_INITIALIZATION_ERROR
             log.error(
                 f"Failed to init repository with kwargs: {kwargs}",
+                status_code=error_code.status_code,
+                status=error_code.name,
                 exc_info=True,
                 repo=name,
             )
             raise AppException(
-                ErrorCode.REPO_INITIALIZATION_ERROR,
                 f"Failed to initialize {name} repo: {str(e)}",
             )
 
@@ -1156,6 +1228,7 @@ src/ocrorchestrator/repos/base.py
 import functools
 import traceback
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Callable, Dict
 
 import structlog
@@ -1181,6 +1254,8 @@ def repo_error_handler(func: Callable):
             )
             log.error(
                 f"Repo operation error in {func.__name__}",
+                status_code=error_code.status_code,
+                status=error_code.name,
                 exc_info=True,
             )
             raise RepoException(error_code, traceback.format_exc()) from e
@@ -1189,6 +1264,11 @@ def repo_error_handler(func: Callable):
 
 
 class BaseRepo(ABC):
+    def __init__(self, remote_path: str, local_dir: str):
+        self.remote_path = remote_path
+        self.local_dir = Path(local_dir).resolve()
+        self.local_dir.mkdir(parents=True, exist_ok=True)
+
     @abstractmethod
     def _get_yaml(self, path: str) -> Dict[str, Any]:
         pass
@@ -1202,7 +1282,7 @@ class BaseRepo(ABC):
         pass
 
     @abstractmethod
-    def _download_obj(self, path: str, local_path: str) -> None:
+    def _download_obj(self, path: str) -> None:
         pass
 
     @repo_error_handler
@@ -1214,8 +1294,8 @@ class BaseRepo(ABC):
         return self._get_text(path)
 
     @repo_error_handler
-    def download_obj(self, path: str, local_path: str) -> None:
-        self._download_obj(path, local_path)
+    def download_obj(self, path: str) -> None:
+        return self._download_obj(path)
 
 
 class RepoException(AppException):
@@ -1226,7 +1306,9 @@ class RepoException(AppException):
 src/ocrorchestrator/repos/local.py
 ---
 import json
-from typing import Any, Dict, Optional
+import shutil
+from pathlib import Path
+from typing import Any, Dict
 
 import yaml
 
@@ -1234,27 +1316,30 @@ from .base import BaseRepo
 
 
 class LocalRepo(BaseRepo):
-    def __init__(self, base_path: str):
-        self.base_path = base_path
-
     def _get_yaml(self, path: str) -> Dict[str, Any]:
-        full_path = f"{self.base_path}/{path}"
+        full_path = Path(self.remote_path) / path
         with open(full_path, "r") as file:
             return yaml.safe_load(file)
 
     def _get_json(self, path: str) -> Dict[str, Any]:
-        full_path = f"{self.base_path}/{path}"
+        full_path = Path(self.remote_path) / path
         with open(full_path, "r") as file:
             return json.load(file)
 
     def _get_text(self, path: str) -> str:
-        full_path = f"{self.base_path}/{path}"
+        full_path = Path(self.remote_path) / path
         with open(full_path, "r") as file:
             return file.read()
 
-    def _download_obj(self, path: str, local_path: Optional[str] = None) -> None:
-        full_path = f"{self.base_path}/{path}"
-        return full_path
+    def _download_obj(self, path: str) -> None:
+        src_path = Path(self.remote_path) / path
+        local_file_path = self.local_dir / path
+        local_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not local_file_path.exists():
+            shutil.copy2(src_path, local_file_path)
+
+        return str(local_file_path)
 
 
 ---
