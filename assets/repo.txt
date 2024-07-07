@@ -45,8 +45,15 @@ from typing import Callable
 import structlog
 from fastapi import APIRouter, Depends
 
-from .datamodels.api_io import AppException, AppResponse, OCRRequest
-from .deps import get_processor
+from .config.app_config import AppConfig
+from .datamodels.api_io import (
+    AppException,
+    AppResponse,
+    ConfigUpdateRequest,
+    OCRRequest,
+)
+from .deps import get_proc_manager, get_processor
+from .managers.processor import ProcessorManager
 from .processors import BaseProcessor
 from .utils.constants import ErrorCode
 from .utils.misc import create_dynamic_message
@@ -58,9 +65,10 @@ log = structlog.get_logger()
 def process_request(req: OCRRequest, func: Callable) -> AppResponse:
     try:
         response = func(req)
-        message = create_dynamic_message(response, req.fields)
+        if hasattr(req, "fields"):
+            response = create_dynamic_message(response, req.fields)
         log.info("--- Request processed successfully ---")
-        return AppResponse(status="OK", status_code=200, message=message)
+        return AppResponse(status="OK", status_code=200, message=response)
     except Exception as e:
         if isinstance(e, AppException):
             raise e
@@ -92,26 +100,36 @@ async def predict_offline(
     return process_request(req, processor.process_offline)
 
 
+@ocr_router.post("/update_config")
+async def update_config(
+    config_update: ConfigUpdateRequest,
+    manager: ProcessorManager = Depends(get_proc_manager),
+):
+    if config_update.config:
+        new_config = AppConfig(**config_update.config)
+        return process_request(new_config, manager.refresh)
+    elif config_update.config_file:
+        new_config = AppConfig(
+            **manager.repo.get_obj(
+                config_update.config_file,
+            )
+        )
+        return process_request(new_config, manager.refresh)
+    else:
+        raise AppException(ErrorCode.BAD_REQUEST, "No valid config provided")
+
+
 ---
 src/ocrorchestrator/deps.py
 ---
+
 from fastapi import Depends, Request
 
-from .config.app_config import AppConfig
 from .datamodels.api_io import AppException, OCRRequest
 from .managers.processor import ProcessorManager
 from .processors import BaseProcessor
-from .repos import BaseRepo
 from .utils.constants import ErrorCode
 from .utils.misc import create_task_key
-
-
-def get_repo(req: Request) -> BaseRepo:
-    return req.app.state.repo
-
-
-def get_config(req: Request) -> AppConfig:
-    return req.app.state.config
 
 
 def get_proc_manager(req: Request) -> ProcessorManager:
@@ -137,7 +155,6 @@ src/ocrorchestrator/main.py
 ---
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import structlog
 from fastapi import FastAPI, Request
@@ -160,16 +177,12 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
     repo = RepoFactory.create_repo(repo_type)
-    config = AppConfig(**repo.get_yaml(config_path))
+    config = AppConfig(**repo.get_obj(config_path))
     proc_manager = ProcessorManager(config, repo)
-    app.state.repo = repo
-    app.state.config = config
     app.state.proc_manager = proc_manager
     yield
     log.info("**** Shutting down application ****")
     proc_manager.cleanup()
-    app.state.repo = None
-    app.state.config = None
     app.state.proc_manager = None
 
 
@@ -205,13 +218,18 @@ async def root():
 ---
 src/ocrorchestrator/datamodels/api_io.py
 ---
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from ..utils.constants import ErrorCode
+
+
+class ConfigUpdateRequest(BaseModel):
+    config: Optional[Dict] = None
+    config_file: Optional[str] = None
 
 
 class OCRRequest(BaseModel):
@@ -422,6 +440,8 @@ def generate_dynamic_model(
     for field in fields:
         if field.startswith("is_"):
             field_definitions[field] = (bool, Field(default=False))
+        if field.startswith("num_"):
+            field_definitions[field] = (int, Field(default=None))
         elif field.endswith(("_no", "_date", "_name")):
             field_definitions[field] = (str, Field(default=""))
         elif field.endswith("amount"):
@@ -1050,7 +1070,7 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         }
 
     def _setup(self):
-        prompt = self.repo.get_text(
+        prompt = self.repo.get_obj(
             os.path.join(
                 self.prompts_dir,
                 self.prompt_file,
@@ -1103,10 +1123,14 @@ class ProcessorManager:
             self.processors[key] = processor
         log.info("**** Processors initialized ****")
 
-    def refresh(self):
+    def refresh(self, new_config: AppConfig = None):
         log.info("**** Refreshing processors ****")
+        self.cleanup()
         self.processors.clear()
+        if new_config:
+            self.app_config = new_config
         self._initialize()
+        return self.app_config
 
     def cleanup(self):
         log.info("**** Cleaning up processors ****")
@@ -1210,6 +1234,7 @@ class RepoFactory:
                 repo=name,
             )
             raise AppException(
+                error_code,
                 f"Failed to initialize {name} repo: {str(e)}",
             )
 

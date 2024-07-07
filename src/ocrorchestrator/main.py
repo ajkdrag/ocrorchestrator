@@ -1,6 +1,5 @@
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import structlog
 from fastapi import FastAPI, Request
@@ -25,14 +24,10 @@ async def lifespan(app: FastAPI):
     repo = RepoFactory.create_repo(repo_type)
     config = AppConfig(**repo.get_obj(config_path))
     proc_manager = ProcessorManager(config, repo)
-    app.state.repo = repo
-    app.state.config = config
     app.state.proc_manager = proc_manager
     yield
     log.info("**** Shutting down application ****")
     proc_manager.cleanup()
-    app.state.repo = None
-    app.state.config = None
     app.state.proc_manager = None
 
 

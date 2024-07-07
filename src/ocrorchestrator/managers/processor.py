@@ -27,7 +27,8 @@ class ProcessorManager:
                 self.app_config.general,
                 self.repo,
             )
-            log.info("Setting up processor", processor=type(processor).__name__)
+            log.info("Setting up processor",
+                     processor=type(processor).__name__)
             processor._setup()
             self.processors[key] = processor
         log.info("**** Processors initialized ****")
@@ -39,6 +40,7 @@ class ProcessorManager:
         if new_config:
             self.app_config = new_config
         self._initialize()
+        return self.app_config
 
     def cleanup(self):
         log.info("**** Cleaning up processors ****")

@@ -12,6 +12,7 @@ from ..datamodels.api_io import (
 )
 from ..repos import BaseRepo
 from ..utils.constants import ErrorCode
+from ..utils.timing import log_execution_time
 
 log = structlog.get_logger()
 
@@ -62,10 +63,12 @@ class BaseProcessor:
         raise NotImplementedError
 
     @process_error_handler
+    @log_execution_time
     def cleanup(self) -> None:
         pass
 
     @process_error_handler
+    @log_execution_time
     def process(self, req: OCRRequest) -> Dict[str, Any]:
         log.info("--- Processing online request ---")
         result = self._process(req)
@@ -74,6 +77,7 @@ class BaseProcessor:
         return result
 
     @process_error_handler
+    @log_execution_time
     def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         log.info("--- Processing offline request ---")
         result = self._process_offline(req)

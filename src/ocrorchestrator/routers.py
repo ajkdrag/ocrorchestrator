@@ -4,16 +4,19 @@ from typing import Callable
 import structlog
 from fastapi import APIRouter, Depends
 
+from .config.app_config import AppConfig
 from .datamodels.api_io import (
     AppException,
     AppResponse,
     ConfigUpdateRequest,
     OCRRequest,
 )
-from .deps import get_processor, update_app_state
+from .deps import get_proc_manager, get_processor
+from .managers.processor import ProcessorManager
 from .processors import BaseProcessor
 from .utils.constants import ErrorCode
 from .utils.misc import create_dynamic_message
+from .utils.timing import log_execution_time
 
 ocr_router = APIRouter()
 log = structlog.get_logger()
@@ -42,6 +45,7 @@ def process_request(req: OCRRequest, func: Callable) -> AppResponse:
 
 
 @ocr_router.post("/predict")
+@log_execution_time
 async def predict(
     req: OCRRequest,
     processor: BaseProcessor = Depends(get_processor),
@@ -50,6 +54,7 @@ async def predict(
 
 
 @ocr_router.post("/predict_offline")
+@log_execution_time
 async def predict_offline(
     req: OCRRequest,
     processor: BaseProcessor = Depends(get_processor),
@@ -58,13 +63,20 @@ async def predict_offline(
 
 
 @ocr_router.post("/update_config")
+@log_execution_time
 async def update_config(
     config_update: ConfigUpdateRequest,
-    update_state=Depends(update_app_state),
+    manager: ProcessorManager = Depends(get_proc_manager),
 ):
     if config_update.config:
-        return process_request(config_update.config, update_state)
+        new_config = AppConfig(**config_update.config)
+        return process_request(new_config, manager.refresh)
     elif config_update.config_file:
-        return process_request(config_update.config_file, update_state)
+        new_config = AppConfig(
+            **manager.repo.get_obj(
+                config_update.config_file,
+            )
+        )
+        return process_request(new_config, manager.refresh)
     else:
         raise AppException(ErrorCode.BAD_REQUEST, "No valid config provided")

@@ -42,5 +42,6 @@ class RepoFactory:
                 repo=name,
             )
             raise AppException(
+                error_code,
                 f"Failed to initialize {name} repo: {str(e)}",
             )

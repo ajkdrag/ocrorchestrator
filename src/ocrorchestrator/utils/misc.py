@@ -11,6 +11,8 @@ def generate_dynamic_model(
     for field in fields:
         if field.startswith("is_"):
             field_definitions[field] = (bool, Field(default=False))
+        if field.startswith("num_"):
+            field_definitions[field] = (int, Field(default=None))
         elif field.endswith(("_no", "_date", "_name")):
             field_definitions[field] = (str, Field(default=""))
         elif field.endswith("amount"):
