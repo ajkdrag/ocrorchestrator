@@ -8,6 +8,7 @@ from vertexai.generative_models import HarmCategory as HC
 IMG_SIZE = (224, 224)
 PKG_ROOT = Path(__file__).parent.parent
 PROJ_ROOT = PKG_ROOT.parent.parent
+GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
 
 PRETRAINED_MODELS = {
     "resnet50": models.resnet50,

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from .config.app_config import AppConfig
 from .datamodels.api_io import AppException, AppResponse
 from .managers.processor import ProcessorManager
+from .managers.secrets import setup_google_credentials
 from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
@@ -21,6 +22,7 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
+    setup_google_credentials()
     repo = RepoFactory.create_repo(repo_type)
     config = AppConfig(**repo.get_obj(config_path))
     proc_manager = ProcessorManager(config, repo)
