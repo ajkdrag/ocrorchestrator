@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import yaml
 
@@ -28,7 +28,24 @@ class GCSRepo(BaseRepo):
         blob = self.bucket.blob(path)
         return blob.download_as_text()
 
-    def _download_obj(self, path: str) -> None:
+    def _get_binary(self, path: str) -> bytes:
+        blob = self.bucket.blob(path)
+        return blob.download_as_bytes()
+
+    def _list_directory(self, path: str) -> List[str]:
+        prefix = path.rstrip("/") + "/"
+        blobs = self.bucket.list_blobs(prefix=prefix, delimiter="/")
+        files = []
+        for blob in blobs:
+            if blob.name != prefix:  # Exclude the directory itself
+                file_path = blob.name[len(prefix) :]
+                if (
+                    "/" not in file_path
+                ):  # Only include files in the immediate directory
+                    files.append(blob.name)
+        return files
+
+    def _download_obj(self, path: str) -> str:
         blob = self.bucket.blob(path)
         local_file_path = self.local_dir / path
         local_file_path.parent.mkdir(parents=True, exist_ok=True)

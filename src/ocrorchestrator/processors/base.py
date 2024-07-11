@@ -1,5 +1,8 @@
 import functools
+import json
+import os
 import traceback
+from pathlib import Path
 from typing import Any, Callable, Dict
 
 import structlog
@@ -9,8 +12,10 @@ from ..datamodels.api_io import (
     AppException,
     OCRRequest,
     OCRRequestOffline,
+    SaveOptions,
 )
 from ..repos import BaseRepo
+from ..repos.factory import RepoFactory
 from ..utils.constants import ErrorCode
 from ..utils.timing import log_execution_time
 
@@ -59,6 +64,22 @@ class BaseProcessor:
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def _save_output(
+        self,
+        result: Dict[str, Any],
+        save_options: SaveOptions,
+        filename: str,
+    ) -> str:
+        if not self.output_repo:
+            self.output_repo = self._get_repo(save_options.output_path)
+
+        file_content = json.dumps(result)
+        fname = f"{filename}.{save_options.output_format}"
+        dir = save_options.output_path
+        file_path = f"{dir}/{fname}"
+        self.output_repo.save_file(file_path, file_content)
+        return file_path
+
     def _process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         raise NotImplementedError
 
@@ -74,12 +95,22 @@ class BaseProcessor:
         result = self._process(req)
         if self.log_model_output:
             log.info("Model output", output=result)
+        if req.save_options:
+            saved_path = self._save_output(
+                result,
+                req.save_options,
+                req.guid,
+            )
+            return {"saved_location": saved_path}
         return result
 
     @process_error_handler
     @log_execution_time
     def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         log.info("--- Processing offline request ---")
+        # TODO: build src repo from req.location
+        src_repo = RepoFactory.from_uri(req.location)
+        # TODO: build tgt repo from req.save_options.output_path
         result = self._process_offline(req)
         if self.log_model_output:
             log.info("Model output", output=result)

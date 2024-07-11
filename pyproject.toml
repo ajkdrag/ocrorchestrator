@@ -17,8 +17,10 @@ dependencies = [
     "langchain-google-vertexai>=1.0.4",
     "langchain>=0.2.1",
     "google-cloud-storage>=2.16.0",
+    "kubernetes>=30.1.0",
+    "PyMuPDF>=1.24.7",
 ]
-requires-python = "<4.0,>=3.8.1"
+requires-python = "==3.10.*"
 readme = "README.md"
 license = {text = "MIT"}
 

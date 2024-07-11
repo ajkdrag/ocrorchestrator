@@ -1,7 +1,7 @@
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import yaml
 
@@ -24,7 +24,16 @@ class LocalRepo(BaseRepo):
         with open(full_path, "r") as file:
             return file.read()
 
-    def _download_obj(self, path: str) -> None:
+    def _get_binary(self, path: str) -> bytes:
+        full_path = Path(self.remote_path) / path
+        with open(full_path, "rb") as file:
+            return file.read()
+
+    def _list_directory(self, path: str) -> List[str]:
+        full_path = Path(self.remote_path) / path
+        return [str(Path(path) / f.name) for f in full_path.iterdir() if f.is_file()]
+
+    def _download_obj(self, path: str) -> str:
         src_path = Path(self.remote_path) / path
         local_file_path = self.local_dir / path
         local_file_path.parent.mkdir(parents=True, exist_ok=True)

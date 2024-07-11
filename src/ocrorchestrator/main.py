@@ -13,9 +13,7 @@ from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
 
-repo_type = os.environ.get("REPO_TYPE", "local")
-config_path = os.environ.get("CONFIG_PATH", "configs/config_v1.yaml")
-
+config_path = os.environ["CONFIG_PATH"]
 log = structlog.get_logger()
 
 
@@ -23,8 +21,8 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
     setup_google_credentials()
-    repo = RepoFactory.create_repo(repo_type)
-    config = AppConfig(**repo.get_obj(config_path))
+    repo, content = RepoFactory.from_uri(config_path)
+    config = AppConfig(**content)
     proc_manager = ProcessorManager(config, repo)
     app.state.proc_manager = proc_manager
     yield

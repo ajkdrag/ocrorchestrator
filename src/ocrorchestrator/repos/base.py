@@ -1,9 +1,11 @@
+import base64
 import functools
 import traceback
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
+import fitz
 import structlog
 
 from ..datamodels.api_io import AppException
@@ -55,19 +57,50 @@ class BaseRepo(ABC):
         pass
 
     @abstractmethod
-    def _download_obj(self, path: str) -> None:
+    def _get_binary(self, path: str) -> bytes:
+        pass
+
+    def _get_image(self, path: str) -> str:
+        image_data = self._get_binary(path)
+        return base64.b64encode(image_data).decode("utf-8")
+
+    def _get_pdf(self, path: str) -> str:
+        pdf_data = self._get_binary(path)
+        pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
+        if len(pdf_document) > 0:
+            first_page = pdf_document[0]
+            pix = first_page.get_pixmap()
+            img_data = pix.tobytes("png")
+            return base64.b64encode(img_data).decode("utf-8")
+        return ""
+
+    @abstractmethod
+    def _download_obj(self, path: str) -> str:
+        pass
+
+    @abstractmethod
+    def _list_directory(self, path: str) -> List[str]:
         pass
 
     @repo_error_handler
     def get_obj(self, path: str) -> str:
-        if path.endswith(".yaml"):
+        if path.endswith("/"):
+            return self._list_directory(path)
+        elif path.endswith((".yaml", ".yml")):
             return self._get_yaml(path)
         elif path.endswith(".json"):
             return self._get_json(path)
-        return self._get_text(path)
+        elif path.lower().endswith((".png", ".jpg", ".jpeg")):
+            return self._get_image(path)
+        elif path.lower().endswith(".pdf"):
+            return self._get_pdf(path)
+        elif path.lower().endswith(".txt"):
+            return self._get_text(path)
+        else:
+            return self._get_binary(path)
 
     @repo_error_handler
-    def download_obj(self, path: str) -> None:
+    def download_obj(self, path: str) -> str:
         return self._download_obj(path)
 
 

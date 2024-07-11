@@ -12,12 +12,18 @@ class ConfigUpdateRequest(BaseModel):
     config_file: Optional[str] = None
 
 
+class SaveOptions(BaseModel):
+    output_path: str
+    output_format: str = "json"
+
+
 class OCRRequest(BaseModel):
     image: str  # base64 image as utf-8
     guid: Optional[str] = Field(default_factory=uuid4)
     category: str
     task: str
     fields: Optional[List[str]] = None
+    save_options: Optional[SaveOptions] = None
 
 
 class OCRRequestOffline(BaseModel):
@@ -26,6 +32,7 @@ class OCRRequestOffline(BaseModel):
     category: str
     task: str
     fields: Optional[List[str]] = Field(default_factory=list)
+    save_options: Optional[SaveOptions] = None
 
 
 class AppResponse(BaseModel):

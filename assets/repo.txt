@@ -57,6 +57,7 @@ from .managers.processor import ProcessorManager
 from .processors import BaseProcessor
 from .utils.constants import ErrorCode
 from .utils.misc import create_dynamic_message
+from .utils.timing import log_execution_time
 
 ocr_router = APIRouter()
 log = structlog.get_logger()
@@ -85,6 +86,7 @@ def process_request(req: OCRRequest, func: Callable) -> AppResponse:
 
 
 @ocr_router.post("/predict")
+@log_execution_time
 async def predict(
     req: OCRRequest,
     processor: BaseProcessor = Depends(get_processor),
@@ -93,6 +95,7 @@ async def predict(
 
 
 @ocr_router.post("/predict_offline")
+@log_execution_time
 async def predict_offline(
     req: OCRRequest,
     processor: BaseProcessor = Depends(get_processor),
@@ -101,6 +104,7 @@ async def predict_offline(
 
 
 @ocr_router.post("/update_config")
+@log_execution_time
 async def update_config(
     config_update: ConfigUpdateRequest,
     manager: ProcessorManager = Depends(get_proc_manager),
@@ -163,6 +167,7 @@ from fastapi.responses import JSONResponse
 from .config.app_config import AppConfig
 from .datamodels.api_io import AppException, AppResponse
 from .managers.processor import ProcessorManager
+from .managers.secrets import setup_google_credentials
 from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
@@ -176,6 +181,7 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
+    setup_google_credentials()
     repo = RepoFactory.create_repo(repo_type)
     config = AppConfig(**repo.get_obj(config_path))
     proc_manager = ProcessorManager(config, repo)
@@ -232,12 +238,19 @@ class ConfigUpdateRequest(BaseModel):
     config_file: Optional[str] = None
 
 
+class SaveOptions(BaseModel):
+    save_output: bool = False
+    output_path: Optional[str] = None
+    output_format: str = "json"
+
+
 class OCRRequest(BaseModel):
     image: str  # base64 image as utf-8
     guid: Optional[str] = Field(default_factory=uuid4)
     category: str
     task: str
     fields: Optional[List[str]] = None
+    save_options: Optional[SaveOptions] = None
 
 
 class OCRRequestOffline(BaseModel):
@@ -246,6 +259,7 @@ class OCRRequestOffline(BaseModel):
     category: str
     task: str
     fields: Optional[List[str]] = Field(default_factory=list)
+    save_options: Optional[SaveOptions] = None
 
 
 class AppResponse(BaseModel):
@@ -303,6 +317,61 @@ def load_pretrained_classifier(
         model.load_state_dict(torch.load(checkpoint, map_location=device))
 
     return model
+
+
+---
+src/ocrorchestrator/utils/timing.py
+---
+import asyncio
+import time
+from functools import wraps
+from typing import Any, Callable
+
+import structlog
+
+logger = structlog.get_logger()
+
+
+def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(func)
+    async def async_wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        end_time = time.time()
+        log_time(func, start_time, end_time, args)
+        return result
+
+    @wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        log_time(func, start_time, end_time, args)
+        return result
+
+    if asyncio.iscoroutinefunction(func):
+        return async_wrapper
+    else:
+        return sync_wrapper
+
+
+def log_time(func, start_time, end_time, args):
+    execution_time = end_time - start_time
+
+    # Get the class name if the function is a method
+    class_name = (
+        args[0].__class__.__name__ if args and hasattr(args[0], "__class__") else None
+    )
+
+    log_data = {
+        "function": func.__name__,
+        "execution_time_millis": execution_time * 1000,
+        "module": func.__module__,
+    }
+    if class_name:
+        log_data["class"] = class_name
+
+    logger.info("--- Function execution time ---", **log_data)
 
 
 ---
@@ -388,6 +457,7 @@ from vertexai.generative_models import HarmCategory as HC
 IMG_SIZE = (224, 224)
 PKG_ROOT = Path(__file__).parent.parent
 PROJ_ROOT = PKG_ROOT.parent.parent
+GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
 
 PRETRAINED_MODELS = {
     "resnet50": models.resnet50,
@@ -801,7 +871,9 @@ from .pytorch import DocumentValidationProcessor
 src/ocrorchestrator/processors/base.py
 ---
 import functools
+import json
 import traceback
+from pathlib import Path
 from typing import Any, Callable, Dict
 
 import structlog
@@ -811,9 +883,11 @@ from ..datamodels.api_io import (
     AppException,
     OCRRequest,
     OCRRequestOffline,
+    SaveOptions,
 )
 from ..repos import BaseRepo
 from ..utils.constants import ErrorCode
+from ..utils.timing import log_execution_time
 
 log = structlog.get_logger()
 
@@ -860,22 +934,44 @@ class BaseProcessor:
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def _save_output(
+        self, result: Dict[str, Any], save_options: SaveOptions, filename: str
+    ) -> str:
+        if save_options and save_options.save_output:
+            output_path = Path(save_options.output_path)
+            output_path.mkdir(parents=True, exist_ok=True)
+            file_path = output_path / f"{filename}.{save_options.output_format}"
+            with open(file_path, "w") as f:
+                json.dump(result, f)
+            return str(file_path)
+        return None
+
     def _process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         raise NotImplementedError
 
     @process_error_handler
+    @log_execution_time
     def cleanup(self) -> None:
         pass
 
     @process_error_handler
+    @log_execution_time
     def process(self, req: OCRRequest) -> Dict[str, Any]:
         log.info("--- Processing online request ---")
         result = self._process(req)
         if self.log_model_output:
             log.info("Model output", output=result)
+        saved_path = self._save_output(
+            result,
+            req.save_options,
+            req.guid,
+        )
+        if saved_path:
+            return {"saved_location": saved_path}
         return result
 
     @process_error_handler
+    @log_execution_time
     def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         log.info("--- Processing offline request ---")
         result = self._process_offline(req)
@@ -1083,6 +1179,78 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
         image_data = f"data:image/PNG;base64,{req.image}"
         return self.predict(image_data)
+
+
+---
+src/ocrorchestrator/managers/secrets.py
+---
+import base64
+import json
+import os
+from pathlib import Path
+
+import structlog
+from kubernetes import client, config
+
+from ..utils.constants import GCP_ENV_VAR
+
+log = structlog.get_logger()
+
+
+def is_k8s_env():
+    return "KUBERNETES_SERVICE_HOST" in os.environ
+
+
+def verify_google_credentials():
+    if GCP_ENV_VAR in os.environ:
+        creds_path = os.environ[GCP_ENV_VAR]
+        if os.path.exists(creds_path):
+            try:
+                with open(creds_path, "r") as f:
+                    json.load(f)
+                log.info(f"{GCP_ENV_VAR} successfully set and validated")
+            except json.JSONDecodeError:
+                log.error(f"Invalid JSON in {GCP_ENV_VAR} file: {creds_path}")
+        else:
+            log.error(f"{GCP_ENV_VAR} file not found: {creds_path}")
+    else:
+        log.warning(f"{GCP_ENV_VAR} not set")
+
+
+def setup_google_credentials():
+    GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
+
+    if GCP_ENV_VAR in os.environ:
+        log.info(f"{GCP_ENV_VAR} is already set")
+    elif is_k8s_env():
+        log.info("Running in Kubernetes environment")
+
+        secret_name = os.environ["secret-name"]
+        secret_namespace = os.environ["secret-namespace"]
+        sa_filename = os.environ["sa-filename"]
+
+        try:
+            config.load_incluster_config()
+            v1 = client.CoreV1Api()
+            secret = v1.read_namespaced_secret(secret_name, secret_namespace)
+
+            creds_b64 = secret.data[sa_filename]
+
+            if creds_b64:
+                creds_json = base64.b64decode(creds_b64).decode("utf-8")
+                creds_file = Path(f"/tmp/{GCP_ENV_VAR}.json")
+                creds_file.write_text(creds_json)
+                os.environ[GCP_ENV_VAR] = str(creds_file)
+                log.info(f"Set {GCP_ENV_VAR} to {creds_file}")
+            else:
+                log.warning(f"{GCP_ENV_VAR} not found in the secret")
+        except Exception as e:
+            log.error(f"Error reading Kubernetes secret: {str(e)}")
+    else:
+        log.warning(f"Not in Kubernetes and {GCP_ENV_VAR} not set")
+        return
+
+    verify_google_credentials()
 
 
 ---
