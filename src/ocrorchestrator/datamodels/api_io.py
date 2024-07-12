@@ -1,8 +1,9 @@
+import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 
 from ..utils.constants import ErrorCode
 
@@ -13,26 +14,51 @@ class ConfigUpdateRequest(BaseModel):
 
 
 class SaveOptions(BaseModel):
-    output_path: str
-    output_format: str = "json"
+    path: str
+    format: str = "json"
 
 
 class OCRRequest(BaseModel):
     image: str  # base64 image as utf-8
-    guid: Optional[str] = Field(default_factory=uuid4)
+    guid: str = Field(default_factory=uuid4)
     category: str
     task: str
     fields: Optional[List[str]] = None
     save_options: Optional[SaveOptions] = None
+    log_result: bool = True
+
+    @staticmethod
+    def from_offline_req(OCRRequestOffline, image):
+        req_dict = OCRRequestOffline.dict()
+        req_dict["image"] = image
+        return OCRRequest(**req_dict)
 
 
 class OCRRequestOffline(BaseModel):
-    location: str  # path to gcs/s3
-    guid: Optional[str] = Field(default_factory=uuid4)
+    location: str  # path to gcs/s3/folder/file
+    guid: str = Field(default_factory=uuid4)
     category: str
     task: str
-    fields: Optional[List[str]] = Field(default_factory=list)
+    fields: Optional[List[str]] = None
     save_options: Optional[SaveOptions] = None
+    log_result: bool = True
+
+    @root_validator
+    def validate_save_options_path(cls, values):
+        save_options = values.get("save_options")
+        if save_options and save_options.path:
+            path = save_options.path
+
+            # Check if the path looks like a file path
+            _, ext = os.path.splitext(path)
+            if ext:
+                raise ValueError(
+                    "save_options.path must be a directory path, not a file path"
+                )
+
+            save_options.path = save_options.path.rstrip("/") + "/"
+
+        return values
 
 
 class AppResponse(BaseModel):

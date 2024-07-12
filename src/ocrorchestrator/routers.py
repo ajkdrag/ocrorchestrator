@@ -26,7 +26,10 @@ def process_request(req: OCRRequest, func: Callable) -> AppResponse:
     try:
         response = func(req)
         if hasattr(req, "fields"):
-            response = create_dynamic_message(response, req.fields)
+            if isinstance(response, list):
+                response = [create_dynamic_message(r, req.fields) for r in response]
+            else:
+                response = create_dynamic_message(response, req.fields)
         log.info("--- Request processed successfully ---")
         return AppResponse(status="OK", status_code=200, message=response)
     except Exception as e:
