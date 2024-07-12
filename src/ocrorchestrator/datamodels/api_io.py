@@ -1,8 +1,8 @@
 import os
 from typing import Any, Dict, List, Optional
+from fastapi import HTTPException
 from uuid import uuid4
 
-from fastapi import HTTPException
 from pydantic import BaseModel, Field, root_validator
 
 from ..utils.constants import ErrorCode
@@ -43,7 +43,7 @@ class OCRRequestOffline(BaseModel):
     save_options: Optional[SaveOptions] = None
     log_result: bool = True
 
-    @root_validator
+    @root_validator(pre=True)
     def validate_save_options_path(cls, values):
         save_options = values.get("save_options")
         if save_options and save_options.path:
@@ -74,3 +74,16 @@ class AppException(HTTPException):
             detail=f"{error_code.name}: {detail or error_code.message}",
         )
         self.status = error_code.name
+
+
+class AppException2(Exception):
+    def __init__(self, error_code: ErrorCode, detail: str = None):
+        super().__init__(
+            *[
+                error_code.status_code,
+                f"{error_code.name}: {detail or error_code.message}",
+            ]
+        )
+        self.status = error_code.name
+        self.status_code = error_code.status_code
+        self.detail = f"{error_code.name}: {detail or error_code.message}"

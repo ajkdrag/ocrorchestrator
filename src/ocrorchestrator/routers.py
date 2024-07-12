@@ -10,6 +10,7 @@ from .datamodels.api_io import (
     AppResponse,
     ConfigUpdateRequest,
     OCRRequest,
+    OCRRequestOffline
 )
 from .deps import get_proc_manager, get_processor
 from .managers.processor import ProcessorManager
@@ -44,7 +45,7 @@ def process_request(req: OCRRequest, func: Callable) -> AppResponse:
             exc_info=True,
         )
 
-        raise AppException(error_code, traceback.format_exc()) from e
+        raise AppException(error_code, traceback.format_exc())
 
 
 @ocr_router.post("/predict")
@@ -59,7 +60,7 @@ async def predict(
 @ocr_router.post("/predict_offline")
 @log_execution_time
 async def predict_offline(
-    req: OCRRequest,
+    req: OCRRequestOffline,
     processor: BaseProcessor = Depends(get_processor),
 ):
     return process_request(req, processor.process_offline)

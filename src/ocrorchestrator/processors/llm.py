@@ -35,12 +35,7 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         }
 
     def _setup(self):
-        prompt = self.repo.get_obj(
-            os.path.join(
-                self.prompts_dir,
-                self.prompt_file,
-            )
-        )
+        prompt = self.repo.get_obj(f"{self.prompts_dir}/{self.prompt_file}")
         self.load_llm(model_name=self.model_name, **self.model_config)
         self.load_output_parser(self.fields)
         self.load_prompt(prompt)

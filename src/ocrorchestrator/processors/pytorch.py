@@ -27,10 +27,7 @@ class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
 
     def _setup(self):
         checkpoint = self.repo.download_obj(
-            os.path.join(
-                self.models_dir,
-                self.task_config.model,
-            )
+            f"{self.models_dir}/{self.task_config.model}"
         )
         self.load_model(
             self.model_name,

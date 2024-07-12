@@ -75,7 +75,7 @@ class BaseRepo(ABC):
         return ""
 
     @abstractmethod
-    def _download_obj(self, path: str) -> str:
+    def _download_obj(self, path: str, overwrite=False) -> str:
         pass
 
     @abstractmethod
@@ -100,8 +100,8 @@ class BaseRepo(ABC):
             return self._get_binary(path)
 
     @repo_error_handler
-    def download_obj(self, path: str) -> str:
-        return self._download_obj(path)
+    def download_obj(self, path: str, overwrite=False) -> str:
+        return self._download_obj(path, overwrite=overwrite)
 
 
 class RepoException(AppException):

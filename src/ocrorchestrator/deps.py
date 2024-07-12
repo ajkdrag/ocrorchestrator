@@ -1,7 +1,8 @@
+from typing import Union
 
 from fastapi import Depends, Request
 
-from .datamodels.api_io import AppException, OCRRequest
+from .datamodels.api_io import AppException, OCRRequest, OCRRequestOffline
 from .managers.processor import ProcessorManager
 from .processors import BaseProcessor
 from .utils.constants import ErrorCode
@@ -13,7 +14,7 @@ def get_proc_manager(req: Request) -> ProcessorManager:
 
 
 def get_processor(
-    req: OCRRequest,
+    req: Union[OCRRequest, OCRRequestOffline],
     manager: ProcessorManager = Depends(get_proc_manager),
 ) -> BaseProcessor:
     key = create_task_key(req.category, req.task)

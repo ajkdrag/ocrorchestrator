@@ -6,12 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .config.app_config import AppConfig
-from .datamodels.api_io import AppException, AppResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from .managers.processor import ProcessorManager
 from .managers.secrets import setup_google_credentials
 from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
+from .datamodels.api_io import AppException, AppResponse
 
 config_path = os.environ["CONFIG_PATH"]
 log = structlog.get_logger()
@@ -48,10 +49,22 @@ async def ocr_exception_handler(request: Request, exc: AppException):
     )
 
 
+async def rest_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=AppResponse(
+            status="Unknown HTTP error",
+            status_code=exc.status_code,
+            message=exc.detail,
+        ).dict(),
+    )
+
+
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(LoggerMiddleware)
 app.include_router(ocr_router)
 app.add_exception_handler(AppException, ocr_exception_handler)
+app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
 
 
 @app.get("/")

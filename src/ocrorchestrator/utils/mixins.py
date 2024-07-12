@@ -38,7 +38,7 @@ class VertexAILangchainMixin:
             top_p=top_p,
             top_k=top_k,
             max_output_tokens=max_output_tokens,
-            safety_settings=SAFETY_SETTINGS,
+            # safety_settings=SAFETY_SETTINGS,
         )
 
     def load_output_parser(self, fields: list[str]):
