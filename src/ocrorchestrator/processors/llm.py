@@ -1,4 +1,3 @@
-import os
 from typing import Any, Dict
 
 import structlog
@@ -35,11 +34,12 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         }
 
     def _setup(self):
-        prompt = self.repo.get_obj(f"{self.prompts_dir}/{self.prompt_file}")
+        template = self.repo.get_obj(f"{self.prompts_dir}/{self.prompt_file}")
         self.load_llm(model_name=self.model_name, **self.model_config)
         self.load_output_parser(self.fields)
-        self.load_prompt(prompt)
+        self.load_prompt(template)
 
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        # TODO: check mime type, instead of hardcoding PNG
         image_data = f"data:image/PNG;base64,{req.image}"
         return self.predict(image_data)

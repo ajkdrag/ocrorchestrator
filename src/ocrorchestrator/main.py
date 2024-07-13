@@ -17,6 +17,7 @@ from .datamodels.api_io import AppException, AppResponse
 config_path = os.environ["CONFIG_PATH"]
 log = structlog.get_logger()
 
+log.info(f"Using starter config: {config_path}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,8 +64,8 @@ async def rest_exception_handler(request: Request, exc: StarletteHTTPException):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(LoggerMiddleware)
 app.include_router(ocr_router)
-app.add_exception_handler(AppException, ocr_exception_handler)
-app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
+# app.add_exception_handler(AppException, ocr_exception_handler)
+# app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
 
 
 @app.get("/")

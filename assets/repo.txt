@@ -51,6 +51,7 @@ from .datamodels.api_io import (
     AppResponse,
     ConfigUpdateRequest,
     OCRRequest,
+    OCRRequestOffline
 )
 from .deps import get_proc_manager, get_processor
 from .managers.processor import ProcessorManager
@@ -67,7 +68,10 @@ def process_request(req: OCRRequest, func: Callable) -> AppResponse:
     try:
         response = func(req)
         if hasattr(req, "fields"):
-            response = create_dynamic_message(response, req.fields)
+            if isinstance(response, list):
+                response = [create_dynamic_message(r, req.fields) for r in response]
+            else:
+                response = create_dynamic_message(response, req.fields)
         log.info("--- Request processed successfully ---")
         return AppResponse(status="OK", status_code=200, message=response)
     except Exception as e:
@@ -82,7 +86,7 @@ def process_request(req: OCRRequest, func: Callable) -> AppResponse:
             exc_info=True,
         )
 
-        raise AppException(error_code, traceback.format_exc()) from e
+        raise AppException(error_code, traceback.format_exc())
 
 
 @ocr_router.post("/predict")
@@ -97,7 +101,7 @@ async def predict(
 @ocr_router.post("/predict_offline")
 @log_execution_time
 async def predict_offline(
-    req: OCRRequest,
+    req: OCRRequestOffline,
     processor: BaseProcessor = Depends(get_processor),
 ):
     return process_request(req, processor.process_offline)
@@ -124,37 +128,6 @@ async def update_config(
 
 
 ---
-src/ocrorchestrator/deps.py
----
-
-from fastapi import Depends, Request
-
-from .datamodels.api_io import AppException, OCRRequest
-from .managers.processor import ProcessorManager
-from .processors import BaseProcessor
-from .utils.constants import ErrorCode
-from .utils.misc import create_task_key
-
-
-def get_proc_manager(req: Request) -> ProcessorManager:
-    return req.app.state.proc_manager
-
-
-def get_processor(
-    req: OCRRequest,
-    manager: ProcessorManager = Depends(get_proc_manager),
-) -> BaseProcessor:
-    key = create_task_key(req.category, req.task)
-    processor = manager.processors.get(key)
-    if not processor:
-        raise AppException(
-            ErrorCode.PROCESSOR_NOT_FOUND,
-            f"No processor found for {key}",
-        )
-    return processor
-
-
----
 src/ocrorchestrator/main.py
 ---
 import os
@@ -165,16 +138,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .config.app_config import AppConfig
-from .datamodels.api_io import AppException, AppResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from .managers.processor import ProcessorManager
 from .managers.secrets import setup_google_credentials
 from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
+from .datamodels.api_io import AppException, AppResponse
 
-repo_type = os.environ.get("REPO_TYPE", "local")
-config_path = os.environ.get("CONFIG_PATH", "configs/config_v1.yaml")
-
+config_path = os.environ["CONFIG_PATH"]
 log = structlog.get_logger()
 
 
@@ -182,8 +154,8 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
     setup_google_credentials()
-    repo = RepoFactory.create_repo(repo_type)
-    config = AppConfig(**repo.get_obj(config_path))
+    repo, content = RepoFactory.from_uri(config_path)
+    config = AppConfig(**content)
     proc_manager = ProcessorManager(config, repo)
     app.state.proc_manager = proc_manager
     yield
@@ -209,10 +181,22 @@ async def ocr_exception_handler(request: Request, exc: AppException):
     )
 
 
+async def rest_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=AppResponse(
+            status="Unknown HTTP error",
+            status_code=exc.status_code,
+            message=exc.detail,
+        ).dict(),
+    )
+
+
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(LoggerMiddleware)
 app.include_router(ocr_router)
 app.add_exception_handler(AppException, ocr_exception_handler)
+app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
 
 
 @app.get("/")
@@ -222,156 +206,35 @@ async def root():
 
 
 ---
-src/ocrorchestrator/datamodels/api_io.py
+src/ocrorchestrator/deps.py
 ---
-from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from typing import Union
 
-from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from fastapi import Depends, Request
 
-from ..utils.constants import ErrorCode
-
-
-class ConfigUpdateRequest(BaseModel):
-    config: Optional[Dict] = None
-    config_file: Optional[str] = None
+from .datamodels.api_io import AppException, OCRRequest, OCRRequestOffline
+from .managers.processor import ProcessorManager
+from .processors import BaseProcessor
+from .utils.constants import ErrorCode
+from .utils.misc import create_task_key
 
 
-class SaveOptions(BaseModel):
-    save_output: bool = False
-    output_path: Optional[str] = None
-    output_format: str = "json"
+def get_proc_manager(req: Request) -> ProcessorManager:
+    return req.app.state.proc_manager
 
 
-class OCRRequest(BaseModel):
-    image: str  # base64 image as utf-8
-    guid: Optional[str] = Field(default_factory=uuid4)
-    category: str
-    task: str
-    fields: Optional[List[str]] = None
-    save_options: Optional[SaveOptions] = None
-
-
-class OCRRequestOffline(BaseModel):
-    location: str  # path to gcs/s3
-    guid: Optional[str] = Field(default_factory=uuid4)
-    category: str
-    task: str
-    fields: Optional[List[str]] = Field(default_factory=list)
-    save_options: Optional[SaveOptions] = None
-
-
-class AppResponse(BaseModel):
-    status: str
-    status_code: int
-    message: Any
-
-
-class AppException(HTTPException):
-    def __init__(self, error_code: ErrorCode, detail: str = None):
-        super().__init__(
-            status_code=error_code.status_code,
-            detail=f"{error_code.name}: {detail or error_code.message}",
+def get_processor(
+    req: Union[OCRRequest, OCRRequestOffline],
+    manager: ProcessorManager = Depends(get_proc_manager),
+) -> BaseProcessor:
+    key = create_task_key(req.category, req.task)
+    processor = manager.processors.get(key)
+    if not processor:
+        raise AppException(
+            ErrorCode.PROCESSOR_NOT_FOUND,
+            f"No processor found for {key}",
         )
-        self.status = error_code.name
-
-
----
-src/ocrorchestrator/utils/ml.py
----
-from typing import Optional
-
-import structlog
-import torch
-
-from .constants import PRETRAINED_MODELS
-
-log = structlog.get_logger()
-
-
-def get_device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def load_pretrained_classifier(
-    model_name,
-    checkpoint=None,
-    num_classes=None,
-    device: Optional[torch.device] = None,
-):
-    if model_name not in PRETRAINED_MODELS:
-        raise ValueError(f"Model {model_name} is not supported.")
-
-    device = device or get_device()
-
-    model = PRETRAINED_MODELS[model_name](weights="DEFAULT")
-
-    if num_classes is not None:
-        model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
-
-    log.info(
-        f"Initialized model {model_name} with {num_classes} classes, on {device}")
-    if checkpoint:
-        log.info(f"Loading from checkpoint: {checkpoint}")
-        model.load_state_dict(torch.load(checkpoint, map_location=device))
-
-    return model
-
-
----
-src/ocrorchestrator/utils/timing.py
----
-import asyncio
-import time
-from functools import wraps
-from typing import Any, Callable
-
-import structlog
-
-logger = structlog.get_logger()
-
-
-def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
-    @wraps(func)
-    async def async_wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = await func(*args, **kwargs)
-        end_time = time.time()
-        log_time(func, start_time, end_time, args)
-        return result
-
-    @wraps(func)
-    def sync_wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        log_time(func, start_time, end_time, args)
-        return result
-
-    if asyncio.iscoroutinefunction(func):
-        return async_wrapper
-    else:
-        return sync_wrapper
-
-
-def log_time(func, start_time, end_time, args):
-    execution_time = end_time - start_time
-
-    # Get the class name if the function is a method
-    class_name = (
-        args[0].__class__.__name__ if args and hasattr(args[0], "__class__") else None
-    )
-
-    log_data = {
-        "function": func.__name__,
-        "execution_time_millis": execution_time * 1000,
-        "module": func.__module__,
-    }
-    if class_name:
-        log_data["class"] = class_name
-
-    logger.info("--- Function execution time ---", **log_data)
+    return processor
 
 
 ---
@@ -385,161 +248,6 @@ from PIL import Image
 
 def base64_to_pil(b64str):
     return Image.open(BytesIO(b64decode(b64str))).convert("RGB")
-
-
----
-src/ocrorchestrator/utils/logging.py
----
-import uuid
-
-import structlog
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-
-logger = structlog.get_logger()
-
-healthcheck_routes = [
-    "/ocrorchestrator",
-    "/ocrorchestrator/",
-]
-
-
-class LoggerMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: RequestResponseEndpoint,
-    ) -> Response:
-        path = request.url.path
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(
-            method=request.method,
-            client_host=request.client.host,
-            trans_id=str(uuid.uuid4()),
-            api_name=path,
-        )
-
-        if request.method == "POST" and path not in healthcheck_routes:
-            request_data = await request.json()
-            structlog.contextvars.bind_contextvars(
-                guid=request_data.get("guid", ""),
-                category=request_data.get("category", ""),
-                task=request_data.get("task", ""),
-            )
-
-        response = await call_next(request)
-
-        structlog.contextvars.bind_contextvars(
-            status_code=response.status_code,
-        )
-
-        if path not in healthcheck_routes:
-            if 400 <= response.status_code < 500:
-                logger.warn("Client error")
-            elif response.status_code >= 500:
-                logger.error("Server error")
-            else:
-                logger.info("OK")
-
-        return response
-
-
----
-src/ocrorchestrator/utils/constants.py
----
-from enum import Enum
-from pathlib import Path
-
-import torchvision.models as models
-from langchain_google_vertexai import HarmBlockThreshold as HT
-from vertexai.generative_models import HarmCategory as HC
-
-IMG_SIZE = (224, 224)
-PKG_ROOT = Path(__file__).parent.parent
-PROJ_ROOT = PKG_ROOT.parent.parent
-GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
-
-PRETRAINED_MODELS = {
-    "resnet50": models.resnet50,
-    "resnet18": models.resnet18,
-}
-
-
-class ErrorCode(Enum):
-    SUCCESS = (200, "Success")
-    BAD_REQUEST = (400, "Bad Request")
-    UNAUTHORIZED = (401, "Unauthorized")
-    NOT_FOUND = (404, "Not Found")
-    PROCESSOR_NOT_FOUND = (405, "Processor Not Found")
-    INTERNAL_SERVER_ERROR = (500, "Internal Server Error")
-    PROCESSING_ERROR = (502, "Processing Error")
-    INITIALIZATION_ERROR = (503, "Initialization Error")
-    PROCESS_CLEANUP_ERROR = (504, "Cleanup Error")
-    API_CALL_ERROR = (601, "Api Call Error")
-    REPO_GET_ERROR = (701, "Error reading file")
-    REPO_OBJECT_DOWNLOAD_ERROR = (702, "Error downloading object")
-    REPO_INITIALIZATION_ERROR = (703, "Error initializing repository")
-
-    def __init__(self, status_code: int, message: str):
-        self.status_code = status_code
-        self.message = message
-
-
-SAFETY_SETTINGS = {
-    HC.HARM_CATEGORY_UNSPECIFIED: HT.BLOCK_NONE,
-    HC.HARM_CATEGORY_DANGEROUS_CONTENT: HT.BLOCK_NONE,
-    HC.HARM_CATEGORY_HATE_SPEECH: HT.BLOCK_NONE,
-    HC.HARM_CATEGORY_HARASSMENT: HT.BLOCK_NONE,
-    HC.HARM_CATEGORY_SEXUALLY_EXPLICIT: HT.BLOCK_NONE,
-}
-
-
----
-src/ocrorchestrator/utils/misc.py
----
-from typing import Any, Dict, List, Optional
-
-from pydantic import BaseModel, Field, create_model
-
-
-def generate_dynamic_model(
-    fields: List[str],
-    name="ExtractedOutputModel",
-) -> BaseModel:
-    field_definitions = {}
-    for field in fields:
-        if field.startswith("is_"):
-            field_definitions[field] = (bool, Field(default=False))
-        if field.startswith("num_"):
-            field_definitions[field] = (int, Field(default=None))
-        elif field.endswith(("_no", "_date", "_name")):
-            field_definitions[field] = (str, Field(default=""))
-        elif field.endswith("amount"):
-            field_definitions[field] = (float, Field(default=None))
-        elif field.endswith("amounts"):
-            field_definitions[field] = (dict, Field(default={}))
-        else:
-            field_definitions[field] = (str, Field(default=""))
-
-    return create_model(name, **field_definitions)
-
-
-def create_dynamic_message(
-    resp: Dict[str, Any], fields: Optional[List[str]] = None
-) -> BaseModel:
-    if fields is None:
-        field_definitions = {field: (type(value), ...)
-                             for field, value in resp.items()}
-    else:
-        field_definitions = {
-            field: (type(resp[field]), ...) for field in fields if field in resp
-        }
-    DynamicMessage = create_model("DynamicMessage", **field_definitions)
-    return DynamicMessage(**resp)
-
-
-def create_task_key(category, task):
-    return f"{category}__{task}"
 
 
 ---
@@ -585,7 +293,7 @@ class VertexAILangchainMixin:
             top_p=top_p,
             top_k=top_k,
             max_output_tokens=max_output_tokens,
-            safety_settings=SAFETY_SETTINGS,
+            # safety_settings=SAFETY_SETTINGS,
         )
 
     def load_output_parser(self, fields: list[str]):
@@ -694,6 +402,487 @@ class TorchClassifierMixin:
 
 
 ---
+src/ocrorchestrator/utils/misc.py
+---
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, create_model
+
+
+def generate_dynamic_model(
+    fields: List[str],
+    name="ExtractedOutputModel",
+) -> BaseModel:
+    field_definitions = {}
+    for field in fields:
+        if field.startswith("is_"):
+            field_definitions[field] = (bool, Field(default=False))
+        if field.startswith("num_"):
+            field_definitions[field] = (int, Field(default=None))
+        elif field.endswith(("_no", "_date", "_name")):
+            field_definitions[field] = (str, Field(default=""))
+        elif field.endswith("amount"):
+            field_definitions[field] = (float, Field(default=None))
+        elif field.endswith("amounts"):
+            field_definitions[field] = (dict, Field(default={}))
+        else:
+            field_definitions[field] = (str, Field(default=""))
+
+    return create_model(name, **field_definitions)
+
+
+def create_dynamic_message(
+    resp: Dict[str, Any], fields: Optional[List[str]] = None
+) -> BaseModel:
+    if fields is None:
+        field_definitions = {field: (type(value), ...)
+                             for field, value in resp.items()}
+    else:
+        field_definitions = {
+            field: (type(resp[field]), ...) for field in fields if field in resp
+        }
+    DynamicMessage = create_model("DynamicMessage", **field_definitions)
+    return DynamicMessage(**resp)
+
+
+def create_task_key(category, task):
+    return f"{category}__{task}"
+
+
+---
+src/ocrorchestrator/utils/timing.py
+---
+import asyncio
+import time
+from functools import wraps
+from typing import Any, Callable
+
+import structlog
+
+logger = structlog.get_logger()
+
+
+def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(func)
+    async def async_wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        end_time = time.time()
+        log_time(func, start_time, end_time, args)
+        return result
+
+    @wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        log_time(func, start_time, end_time, args)
+        return result
+
+    if asyncio.iscoroutinefunction(func):
+        return async_wrapper
+    else:
+        return sync_wrapper
+
+
+def log_time(func, start_time, end_time, args):
+    execution_time = end_time - start_time
+
+    # Get the class name if the function is a method
+    class_name = (
+        args[0].__class__.__name__ if args and hasattr(args[0], "__class__") else None
+    )
+
+    log_data = {
+        "function": func.__name__,
+        "execution_time_millis": execution_time * 1000,
+        "module": func.__module__,
+    }
+    if class_name:
+        log_data["class"] = class_name
+
+    logger.info("--- Function execution time ---", **log_data)
+
+
+---
+src/ocrorchestrator/utils/constants.py
+---
+from enum import Enum
+from pathlib import Path
+
+import torchvision.models as models
+from langchain_google_vertexai import HarmBlockThreshold as HT
+from vertexai.generative_models import HarmCategory as HC
+
+IMG_SIZE = (224, 224)
+PKG_ROOT = Path(__file__).parent.parent
+PROJ_ROOT = PKG_ROOT.parent.parent
+LOCAL_DIR = PROJ_ROOT.joinpath("data/local").as_posix()
+LOCAL_REPO = PROJ_ROOT.joinpath("data/fs").as_posix()
+GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
+
+PRETRAINED_MODELS = {
+    "resnet50": models.resnet50,
+    "resnet18": models.resnet18,
+}
+
+
+class ErrorCode(Enum):
+    SUCCESS = (200, "Success")
+    BAD_REQUEST = (400, "Bad Request")
+    UNAUTHORIZED = (401, "Unauthorized")
+    NOT_FOUND = (404, "Not Found")
+    PROCESSOR_NOT_FOUND = (405, "Processor Not Found")
+    INTERNAL_SERVER_ERROR = (500, "Internal Server Error")
+    PROCESSING_ERROR = (502, "Processing Error")
+    INITIALIZATION_ERROR = (503, "Initialization Error")
+    PROCESS_CLEANUP_ERROR = (504, "Cleanup Error")
+    API_CALL_ERROR = (511, "Api Call Error")
+    REPO_GET_ERROR = (521, "Error reading file")
+    REPO_OBJECT_DOWNLOAD_ERROR = (522, "Error downloading object")
+    REPO_INITIALIZATION_ERROR = (523, "Error initializing repository")
+
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
+
+
+SAFETY_SETTINGS = {
+    HC.HARM_CATEGORY_UNSPECIFIED: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_DANGEROUS_CONTENT: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_HATE_SPEECH: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_HARASSMENT: HT.BLOCK_NONE,
+    HC.HARM_CATEGORY_SEXUALLY_EXPLICIT: HT.BLOCK_NONE,
+}
+
+
+---
+src/ocrorchestrator/utils/logging.py
+---
+import uuid
+
+import structlog
+from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
+logger = structlog.get_logger()
+
+healthcheck_routes = [
+    "/ocrorchestrator",
+    "/ocrorchestrator/",
+]
+
+
+class LoggerMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        path = request.url.path
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(
+            method=request.method,
+            client_host=request.client.host,
+            trans_id=str(uuid.uuid4()),
+            api_name=path,
+        )
+
+        if request.method == "POST" and path not in healthcheck_routes:
+            request_data = await request.json()
+            structlog.contextvars.bind_contextvars(
+                guid=request_data.get("guid", ""),
+                category=request_data.get("category", ""),
+                task=request_data.get("task", ""),
+            )
+
+        response = await call_next(request)
+
+        structlog.contextvars.bind_contextvars(
+            status_code=response.status_code,
+        )
+
+        if path not in healthcheck_routes:
+            if 400 <= response.status_code < 500:
+                logger.warn("Client error")
+            elif response.status_code >= 500:
+                logger.error("Server error")
+            else:
+                logger.info("OK")
+
+        return response
+
+
+---
+src/ocrorchestrator/utils/ml.py
+---
+from typing import Optional
+
+import structlog
+import torch
+
+from .constants import PRETRAINED_MODELS
+
+log = structlog.get_logger()
+
+
+def get_device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def load_pretrained_classifier(
+    model_name,
+    checkpoint=None,
+    num_classes=None,
+    device: Optional[torch.device] = None,
+):
+    if model_name not in PRETRAINED_MODELS:
+        raise ValueError(f"Model {model_name} is not supported.")
+
+    device = device or get_device()
+
+    model = PRETRAINED_MODELS[model_name](weights="DEFAULT")
+
+    if num_classes is not None:
+        model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+
+    log.info(
+        f"Initialized model {model_name} with {num_classes} classes, on {device}")
+    if checkpoint:
+        log.info(f"Loading from checkpoint: {checkpoint}")
+        model.load_state_dict(torch.load(checkpoint, map_location=device))
+
+    return model
+
+
+---
+src/ocrorchestrator/managers/secrets.py
+---
+import base64
+import json
+import os
+from pathlib import Path
+
+import structlog
+from kubernetes import client, config
+
+from ..utils.constants import GCP_ENV_VAR
+
+log = structlog.get_logger()
+
+
+def is_k8s_env():
+    return "KUBERNETES_SERVICE_HOST" in os.environ
+
+
+def verify_google_credentials():
+    if GCP_ENV_VAR in os.environ:
+        creds_path = os.environ[GCP_ENV_VAR]
+        if os.path.exists(creds_path):
+            try:
+                with open(creds_path, "r") as f:
+                    json.load(f)
+                log.info(f"{GCP_ENV_VAR} successfully set and validated")
+            except json.JSONDecodeError:
+                log.error(f"Invalid JSON in {GCP_ENV_VAR} file: {creds_path}")
+        else:
+            log.error(f"{GCP_ENV_VAR} file not found: {creds_path}")
+    else:
+        log.warning(f"{GCP_ENV_VAR} not set")
+
+
+def setup_google_credentials():
+    GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
+
+    if GCP_ENV_VAR in os.environ:
+        log.info(f"{GCP_ENV_VAR} is already set")
+    elif is_k8s_env():
+        log.info("Running in Kubernetes environment")
+
+        secret_name = os.environ["secret-name"]
+        secret_namespace = os.environ["secret-namespace"]
+        sa_filename = os.environ["sa-filename"]
+
+        try:
+            config.load_incluster_config()
+            v1 = client.CoreV1Api()
+            secret = v1.read_namespaced_secret(secret_name, secret_namespace)
+
+            creds_b64 = secret.data[sa_filename]
+
+            if creds_b64:
+                creds_json = base64.b64decode(creds_b64).decode("utf-8")
+                creds_file = Path(f"/tmp/{GCP_ENV_VAR}.json")
+                creds_file.write_text(creds_json)
+                os.environ[GCP_ENV_VAR] = str(creds_file)
+                log.info(f"Set {GCP_ENV_VAR} to {creds_file}")
+            else:
+                log.warning(f"{GCP_ENV_VAR} not found in the secret")
+        except Exception as e:
+            log.error(f"Error reading Kubernetes secret: {str(e)}")
+    else:
+        log.warning(f"Not in Kubernetes and {GCP_ENV_VAR} not set")
+        return
+
+    verify_google_credentials()
+
+
+---
+src/ocrorchestrator/managers/processor.py
+---
+from typing import Dict
+
+import structlog
+
+from ..config.app_config import AppConfig
+from ..processors import BaseProcessor
+from ..processors.factory import ProcessorFactory
+from ..repos import BaseRepo
+from ..utils.misc import create_task_key
+
+log = structlog.get_logger()
+
+
+class ProcessorManager:
+    def __init__(self, app_config: AppConfig, repo: BaseRepo):
+        self.app_config = app_config
+        self.repo = repo
+        self.processors: Dict[str, BaseProcessor] = {}
+        self._initialize()
+
+    def _initialize(self):
+        log.info("**** Initializing processors ****")
+        for cat, task, task_config in self.app_config.iterate():
+            key = create_task_key(cat, task)
+            processor = ProcessorFactory.create_processor(
+                task_config,
+                self.app_config.general,
+                self.repo,
+            )
+            log.info("Setting up processor",
+                     processor=type(processor).__name__)
+            processor._setup()
+            self.processors[key] = processor
+        log.info("**** Processors initialized ****")
+
+    def refresh(self, new_config: AppConfig = None):
+        log.info("**** Refreshing processors ****")
+        self.cleanup()
+        self.processors.clear()
+        if new_config:
+            self.app_config = new_config
+        self._initialize()
+        return self.app_config
+
+    def cleanup(self):
+        log.info("**** Cleaning up processors ****")
+        for key, processor in self.processors.items():
+            try:
+                processor.cleanup()
+            except Exception:
+                log.error(
+                    "Error during processor cleanup",
+                    processor_key=key,
+                    processor_type=type(processor).__name__,
+                    exc_info=True,
+                )
+
+
+---
+src/ocrorchestrator/datamodels/api_io.py
+---
+import os
+from typing import Any, Dict, List, Optional
+from fastapi import HTTPException
+from uuid import uuid4
+
+from pydantic import BaseModel, Field, root_validator
+
+from ..utils.constants import ErrorCode
+
+
+class ConfigUpdateRequest(BaseModel):
+    config: Optional[Dict] = None
+    config_file: Optional[str] = None
+
+
+class SaveOptions(BaseModel):
+    path: str
+    format: str = "json"
+
+
+class OCRRequest(BaseModel):
+    image: str  # base64 image as utf-8
+    guid: str = Field(default_factory=uuid4)
+    category: str
+    task: str
+    fields: Optional[List[str]] = None
+    save_options: Optional[SaveOptions] = None
+    log_result: bool = True
+
+    @staticmethod
+    def from_offline_req(OCRRequestOffline, image):
+        req_dict = OCRRequestOffline.dict()
+        req_dict["image"] = image
+        return OCRRequest(**req_dict)
+
+
+class OCRRequestOffline(BaseModel):
+    location: str  # path to gcs/s3/folder/file
+    guid: str = Field(default_factory=uuid4)
+    category: str
+    task: str
+    fields: Optional[List[str]] = None
+    save_options: Optional[SaveOptions] = None
+    log_result: bool = True
+
+    @root_validator(pre=True)
+    def validate_save_options_path(cls, values):
+        save_options = values.get("save_options")
+        if save_options and save_options.path:
+            path = save_options.path
+
+            # Check if the path looks like a file path
+            _, ext = os.path.splitext(path)
+            if ext:
+                raise ValueError(
+                    "save_options.path must be a directory path, not a file path"
+                )
+
+            save_options.path = save_options.path.rstrip("/") + "/"
+
+        return values
+
+
+class AppResponse(BaseModel):
+    status: str
+    status_code: int
+    message: Any
+
+
+class AppException(HTTPException):
+    def __init__(self, error_code: ErrorCode, detail: str = None):
+        super().__init__(
+            status_code=error_code.status_code,
+            detail=f"{error_code.name}: {detail or error_code.message}",
+        )
+        self.status = error_code.name
+
+
+class AppException2(Exception):
+    def __init__(self, error_code: ErrorCode, detail: str = None):
+        super().__init__(
+            *[
+                error_code.status_code,
+                f"{error_code.name}: {detail or error_code.message}",
+            ]
+        )
+        self.status = error_code.name
+        self.status_code = error_code.status_code
+        self.detail = f"{error_code.name}: {detail or error_code.message}"
+
+
+---
 src/ocrorchestrator/config/app_config.py
 ---
 from collections import OrderedDict
@@ -743,7 +932,6 @@ class GeneralConfig(BaseModel):
             "std": [0.229, 0.224, 0.225],
         }
     )
-    log_model_output: bool = Field(default=False)
 
 
 class AppConfig(BaseModel):
@@ -763,10 +951,19 @@ class AppConfig(BaseModel):
 
         task_config = category_config.get(task)
         if not task_config:
-            raise ValueError(
-                f"Task '{task}' not found for category '{category}'")
+            raise ValueError(f"Task '{task}' not found for category '{category}'")
 
         return task_config
+
+
+---
+src/ocrorchestrator/processors/__init__.py
+---
+from .api import ApiProcessor
+from .base import BaseProcessor
+from .gradio import PaliGemmaGradioProcessor
+from .llm import LLMProcessor
+from .pytorch import DocumentValidationProcessor
 
 
 ---
@@ -798,76 +995,6 @@ class ProcessorFactory:
 
 
 ---
-src/ocrorchestrator/processors/pytorch.py
----
-import os
-from typing import Any, Dict
-
-from ..config.app_config import (
-    GeneralConfig,
-    TaskConfig,
-)
-from ..datamodels.api_io import OCRRequest
-from ..repos import BaseRepo
-from ..utils.constants import IMG_SIZE
-from ..utils.img import base64_to_pil
-from ..utils.mixins import TorchClassifierMixin
-from .base import BaseProcessor
-
-
-class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
-    def __init__(
-        self,
-        task_config: TaskConfig,
-        general_config: GeneralConfig,
-        repo: BaseRepo,
-    ):
-        super().__init__(task_config, general_config, repo)
-        self.models_dir = general_config.models_dir
-        self.model_name = task_config.model.split("__")[0]
-        self.classes = self.task_config.classes
-
-    def _setup(self):
-        checkpoint = self.repo.download_obj(
-            os.path.join(
-                self.models_dir,
-                self.task_config.model,
-            )
-        )
-        self.load_model(
-            self.model_name,
-            checkpoint,
-            self.classes,
-        )
-
-        self.load_tfms(
-            self.task_config.kwargs.get("img_size", IMG_SIZE),
-            self.general_config.normalization_stats,
-        )
-
-    def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        image = base64_to_pil(req.image)
-        op = self.predict(image, self.task_config.classes)
-        target = self.task_config.kwargs.get("target", self.classes[0])
-        is_valid = op.prediction == target
-        return {
-            "is_valid": is_valid,
-            "reason": op.prediction if not is_valid else None,
-            "confidence": op.conf,
-        }
-
-
----
-src/ocrorchestrator/processors/__init__.py
----
-from .api import ApiProcessor
-from .base import BaseProcessor
-from .gradio import PaliGemmaGradioProcessor
-from .llm import LLMProcessor
-from .pytorch import DocumentValidationProcessor
-
-
----
 src/ocrorchestrator/processors/base.py
 ---
 import functools
@@ -886,6 +1013,7 @@ from ..datamodels.api_io import (
     SaveOptions,
 )
 from ..repos import BaseRepo
+from ..repos.factory import RepoFactory
 from ..utils.constants import ErrorCode
 from ..utils.timing import log_execution_time
 
@@ -926,7 +1054,6 @@ class BaseProcessor:
         self.task_config = task_config
         self.general_config = general_config
         self.repo = repo
-        self.log_model_output = general_config.log_model_output
 
     def _setup(self) -> None:
         raise NotImplementedError
@@ -935,19 +1062,14 @@ class BaseProcessor:
         raise NotImplementedError
 
     def _save_output(
-        self, result: Dict[str, Any], save_options: SaveOptions, filename: str
+        self,
+        result: Dict[str, Any],
+        save_options: SaveOptions,
+        repo: BaseRepo,
     ) -> str:
-        if save_options and save_options.save_output:
-            output_path = Path(save_options.output_path)
-            output_path.mkdir(parents=True, exist_ok=True)
-            file_path = output_path / f"{filename}.{save_options.output_format}"
-            with open(file_path, "w") as f:
-                json.dump(result, f)
-            return str(file_path)
-        return None
-
-    def _process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
-        raise NotImplementedError
+        file_content = json.dumps(result)
+        repo.save_file(save_options.output_path, file_content)
+        return save_options.output_path
 
     @process_error_handler
     @log_execution_time
@@ -959,14 +1081,18 @@ class BaseProcessor:
     def process(self, req: OCRRequest) -> Dict[str, Any]:
         log.info("--- Processing online request ---")
         result = self._process(req)
-        if self.log_model_output:
+        if req.log_result:
             log.info("Model output", output=result)
-        saved_path = self._save_output(
-            result,
-            req.save_options,
-            req.guid,
-        )
-        if saved_path:
+        if req.save_options:
+            opts = req.save_options
+            repo = RepoFactory.from_uri(
+                opts.path,
+                ignore_prefix=True,
+            )
+            if opts.path.endswith("/"):
+                opts.path += f"{req.guid}.{opts.fmt}"
+
+            saved_path = self._save_output(result, opts, repo)
             return {"saved_location": saved_path}
         return result
 
@@ -974,14 +1100,142 @@ class BaseProcessor:
     @log_execution_time
     def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         log.info("--- Processing offline request ---")
-        result = self._process_offline(req)
-        if self.log_model_output:
-            log.info("Model output", output=result)
-        return result
+        src_repo, files_or_data = RepoFactory.from_uri(req.location)
+        if isinstance(files_or_data, list):
+            results = []
+            for file_ in files_or_data:
+                data = src_repo.get_obj(file_)
+                subreq = OCRRequest.from_offline_req(
+                    req,
+                    data,
+                )
+                if subreq.save_options:
+                    subreq.guid = Path(file_).stem
+
+                results.append(self.process(subreq))
+
+            if req.save_options:
+                return {"saved_count": len(results)}
+            else:
+                return results
+
+        else:
+            subreq = OCRRequest.from_offline_req(
+                req,
+                files_or_data,
+            )
+            return self.process(subreq)
 
 
 class ProcessorException(AppException):
     pass
+
+
+---
+src/ocrorchestrator/processors/llm.py
+---
+import os
+from typing import Any, Dict
+
+import structlog
+
+from ..config.app_config import GeneralConfig, TaskConfig
+from ..datamodels.api_io import OCRRequest
+from ..repos import BaseRepo
+from ..utils.mixins import VertexAILangchainMixin
+from .base import BaseProcessor
+
+log = structlog.get_logger()
+
+
+class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        super().__init__(task_config, general_config, repo)
+        self.prompts_dir = general_config.prompts_dir
+        self.prompt_file = task_config.prompt_template
+        self.model_name = task_config.model
+        self.fields = task_config.fields
+        self.model_config = {
+            "temperature": task_config.kwargs.get("temperature", 0.1),
+            "top_p": task_config.kwargs.get("top_p", 0.4),
+            "top_k": task_config.kwargs.get("top_k", 28),
+            "max_output_tokens": task_config.kwargs.get(
+                "max_output_tokens",
+                2048,
+            ),
+        }
+
+    def _setup(self):
+        prompt = self.repo.get_obj(f"{self.prompts_dir}/{self.prompt_file}")
+        self.load_llm(model_name=self.model_name, **self.model_config)
+        self.load_output_parser(self.fields)
+        self.load_prompt(prompt)
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        image_data = f"data:image/PNG;base64,{req.image}"
+        return self.predict(image_data)
+
+
+---
+src/ocrorchestrator/processors/pytorch.py
+---
+import os
+from typing import Any, Dict
+
+from ..config.app_config import (
+    GeneralConfig,
+    TaskConfig,
+)
+from ..datamodels.api_io import OCRRequest
+from ..repos import BaseRepo
+from ..utils.constants import IMG_SIZE
+from ..utils.img import base64_to_pil
+from ..utils.mixins import TorchClassifierMixin
+from .base import BaseProcessor
+
+
+class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
+    def __init__(
+        self,
+        task_config: TaskConfig,
+        general_config: GeneralConfig,
+        repo: BaseRepo,
+    ):
+        super().__init__(task_config, general_config, repo)
+        self.models_dir = general_config.models_dir
+        self.model_name = task_config.model.split("__")[0]
+        self.classes = self.task_config.classes
+
+    def _setup(self):
+        checkpoint = self.repo.download_obj(
+            f"{self.models_dir}/{self.task_config.model}"
+        )
+        self.load_model(
+            self.model_name,
+            checkpoint,
+            self.classes,
+        )
+
+        self.load_tfms(
+            self.task_config.kwargs.get("img_size", IMG_SIZE),
+            self.general_config.normalization_stats,
+        )
+
+    def _process(self, req: OCRRequest) -> Dict[str, Any]:
+        image = base64_to_pil(req.image)
+        op = self.predict(image, self.task_config.classes)
+        target = self.task_config.kwargs.get("target", self.classes[0])
+        is_valid = op.prediction == target
+        return {
+            "is_valid": is_valid,
+            "reason": op.prediction if not is_valid else None,
+            "confidence": op.conf,
+        }
 
 
 ---
@@ -1127,287 +1381,6 @@ class PaliGemmaGradioProcessor(GradioProcessor):
 
 
 ---
-src/ocrorchestrator/processors/llm.py
----
-import os
-from typing import Any, Dict
-
-import structlog
-
-from ..config.app_config import GeneralConfig, TaskConfig
-from ..datamodels.api_io import OCRRequest
-from ..repos import BaseRepo
-from ..utils.mixins import VertexAILangchainMixin
-from .base import BaseProcessor
-
-log = structlog.get_logger()
-
-
-class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
-    def __init__(
-        self,
-        task_config: TaskConfig,
-        general_config: GeneralConfig,
-        repo: BaseRepo,
-    ):
-        super().__init__(task_config, general_config, repo)
-        self.prompts_dir = general_config.prompts_dir
-        self.prompt_file = task_config.prompt_template
-        self.model_name = task_config.model
-        self.fields = task_config.fields
-        self.model_config = {
-            "temperature": task_config.kwargs.get("temperature", 0.1),
-            "top_p": task_config.kwargs.get("top_p", 0.4),
-            "top_k": task_config.kwargs.get("top_k", 28),
-            "max_output_tokens": task_config.kwargs.get(
-                "max_output_tokens",
-                2048,
-            ),
-        }
-
-    def _setup(self):
-        prompt = self.repo.get_obj(
-            os.path.join(
-                self.prompts_dir,
-                self.prompt_file,
-            )
-        )
-        self.load_llm(model_name=self.model_name, **self.model_config)
-        self.load_output_parser(self.fields)
-        self.load_prompt(prompt)
-
-    def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        image_data = f"data:image/PNG;base64,{req.image}"
-        return self.predict(image_data)
-
-
----
-src/ocrorchestrator/managers/secrets.py
----
-import base64
-import json
-import os
-from pathlib import Path
-
-import structlog
-from kubernetes import client, config
-
-from ..utils.constants import GCP_ENV_VAR
-
-log = structlog.get_logger()
-
-
-def is_k8s_env():
-    return "KUBERNETES_SERVICE_HOST" in os.environ
-
-
-def verify_google_credentials():
-    if GCP_ENV_VAR in os.environ:
-        creds_path = os.environ[GCP_ENV_VAR]
-        if os.path.exists(creds_path):
-            try:
-                with open(creds_path, "r") as f:
-                    json.load(f)
-                log.info(f"{GCP_ENV_VAR} successfully set and validated")
-            except json.JSONDecodeError:
-                log.error(f"Invalid JSON in {GCP_ENV_VAR} file: {creds_path}")
-        else:
-            log.error(f"{GCP_ENV_VAR} file not found: {creds_path}")
-    else:
-        log.warning(f"{GCP_ENV_VAR} not set")
-
-
-def setup_google_credentials():
-    GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
-
-    if GCP_ENV_VAR in os.environ:
-        log.info(f"{GCP_ENV_VAR} is already set")
-    elif is_k8s_env():
-        log.info("Running in Kubernetes environment")
-
-        secret_name = os.environ["secret-name"]
-        secret_namespace = os.environ["secret-namespace"]
-        sa_filename = os.environ["sa-filename"]
-
-        try:
-            config.load_incluster_config()
-            v1 = client.CoreV1Api()
-            secret = v1.read_namespaced_secret(secret_name, secret_namespace)
-
-            creds_b64 = secret.data[sa_filename]
-
-            if creds_b64:
-                creds_json = base64.b64decode(creds_b64).decode("utf-8")
-                creds_file = Path(f"/tmp/{GCP_ENV_VAR}.json")
-                creds_file.write_text(creds_json)
-                os.environ[GCP_ENV_VAR] = str(creds_file)
-                log.info(f"Set {GCP_ENV_VAR} to {creds_file}")
-            else:
-                log.warning(f"{GCP_ENV_VAR} not found in the secret")
-        except Exception as e:
-            log.error(f"Error reading Kubernetes secret: {str(e)}")
-    else:
-        log.warning(f"Not in Kubernetes and {GCP_ENV_VAR} not set")
-        return
-
-    verify_google_credentials()
-
-
----
-src/ocrorchestrator/managers/processor.py
----
-from typing import Dict
-
-import structlog
-
-from ..config.app_config import AppConfig
-from ..processors import BaseProcessor
-from ..processors.factory import ProcessorFactory
-from ..repos import BaseRepo
-from ..utils.misc import create_task_key
-
-log = structlog.get_logger()
-
-
-class ProcessorManager:
-    def __init__(self, app_config: AppConfig, repo: BaseRepo):
-        self.app_config = app_config
-        self.repo = repo
-        self.processors: Dict[str, BaseProcessor] = {}
-        self._initialize()
-
-    def _initialize(self):
-        log.info("**** Initializing processors ****")
-        for cat, task, task_config in self.app_config.iterate():
-            key = create_task_key(cat, task)
-            processor = ProcessorFactory.create_processor(
-                task_config,
-                self.app_config.general,
-                self.repo,
-            )
-            log.info("Setting up processor",
-                     processor=type(processor).__name__)
-            processor._setup()
-            self.processors[key] = processor
-        log.info("**** Processors initialized ****")
-
-    def refresh(self, new_config: AppConfig = None):
-        log.info("**** Refreshing processors ****")
-        self.cleanup()
-        self.processors.clear()
-        if new_config:
-            self.app_config = new_config
-        self._initialize()
-        return self.app_config
-
-    def cleanup(self):
-        log.info("**** Cleaning up processors ****")
-        for key, processor in self.processors.items():
-            try:
-                processor.cleanup()
-            except Exception:
-                log.error(
-                    "Error during processor cleanup",
-                    processor_key=key,
-                    processor_type=type(processor).__name__,
-                    exc_info=True,
-                )
-
-
----
-src/ocrorchestrator/repos/gcs.py
----
-import json
-from typing import Any, Dict
-
-import yaml
-
-from .base import BaseRepo
-
-
-class GCSRepo(BaseRepo):
-    def __init__(self, remote_path: str, local_dir: str):
-        from google.cloud import storage
-
-        super().__init__(remote_path, local_dir)
-        self.client = storage.Client()
-        self.bucket = self.client.bucket(self.remote_path)
-
-    def _get_yaml(self, path: str) -> Dict[str, Any]:
-        blob = self.bucket.blob(path)
-        content = blob.download_as_text()
-        return yaml.safe_load(content)
-
-    def _get_json(self, path: str) -> Dict[str, Any]:
-        blob = self.bucket.blob(path)
-        content = blob.download_as_text()
-        return json.loads(content)
-
-    def _get_text(self, path: str) -> str:
-        blob = self.bucket.blob(path)
-        return blob.download_as_text()
-
-    def _download_obj(self, path: str) -> None:
-        blob = self.bucket.blob(path)
-        local_file_path = self.local_dir / path
-        local_file_path.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(local_file_path))
-        return str(local_file_path)
-
-
----
-src/ocrorchestrator/repos/factory.py
----
-import os
-
-import structlog
-
-from ..datamodels.api_io import AppException
-from ..repos import BaseRepo, GCSRepo, LocalRepo
-from ..utils.constants import PROJ_ROOT, ErrorCode
-
-log = structlog.get_logger()
-
-
-class RepoFactory:
-    @staticmethod
-    def create_repo(
-        name: str,
-        remote_path: str = None,
-        **kwargs,
-    ) -> BaseRepo:
-        try:
-            local_dir = PROJ_ROOT.joinpath("data/local").as_posix()
-            remote = os.environ.get("REMOTE_PATH", remote_path)
-            local = os.environ.get("LOCAL_DIR", local_dir)
-
-            if name == "gcs":
-                return GCSRepo(remote, local, **kwargs)
-            elif name == "local":
-                return LocalRepo(remote, remote, **kwargs)
-            else:
-                raise AppException(
-                    ErrorCode.REPO_INITIALIZATION_ERROR,
-                    f"Unknown repo: {name}",
-                )
-        except Exception as e:
-            if isinstance(e, AppException):
-                raise e
-            error_code = ErrorCode.REPO_INITIALIZATION_ERROR
-            log.error(
-                f"Failed to init repository with kwargs: {kwargs}",
-                status_code=error_code.status_code,
-                status=error_code.name,
-                exc_info=True,
-                repo=name,
-            )
-            raise AppException(
-                error_code,
-                f"Failed to initialize {name} repo: {str(e)}",
-            )
-
-
----
 src/ocrorchestrator/repos/__init__.py
 ---
 from .base import BaseRepo
@@ -1416,14 +1389,124 @@ from .local import LocalRepo
 
 
 ---
+src/ocrorchestrator/repos/local.py
+---
+import json
+import shutil
+from pathlib import Path
+from typing import Any, Dict, List
+
+import yaml
+
+from .base import BaseRepo
+
+
+class LocalRepo(BaseRepo):
+    def _get_yaml(self, path: str) -> Dict[str, Any]:
+        full_path = Path(self.remote_path) / path
+        with open(full_path, "r") as file:
+            return yaml.safe_load(file)
+
+    def _get_json(self, path: str) -> Dict[str, Any]:
+        full_path = Path(self.remote_path) / path
+        with open(full_path, "r") as file:
+            return json.load(file)
+
+    def _get_text(self, path: str) -> str:
+        full_path = Path(self.remote_path) / path
+        with open(full_path, "r") as file:
+            return file.read()
+
+    def _get_binary(self, path: str) -> bytes:
+        full_path = Path(self.remote_path) / path
+        with open(full_path, "rb") as file:
+            return file.read()
+
+    def _list_directory(self, path: str) -> List[str]:
+        full_path = Path(self.remote_path) / path
+        return [str(Path(path) / f.name) for f in full_path.iterdir() if f.is_file()]
+
+    def _download_obj(self, path: str, overwrite=False) -> str:
+        src_path = Path(self.remote_path) / path
+        local_file_path = self.local_dir / path
+        local_file_path.parent.mkdir(parents=True, exist_ok=True)
+        if local_file_path.exists() and not overwrite:
+            return str(local_file_path)
+        shutil.copy2(src_path, local_file_path)
+        return str(local_file_path)
+
+
+---
+src/ocrorchestrator/repos/factory.py
+---
+import os
+from typing import Any
+from urllib.parse import urlparse
+
+import structlog
+
+from ..datamodels.api_io import AppException
+from ..repos import BaseRepo, GCSRepo, LocalRepo
+from ..utils.constants import LOCAL_DIR, LOCAL_REPO, ErrorCode
+
+log = structlog.get_logger()
+
+
+class RepoFactory:
+    def from_uri(
+        uri: str,
+        download=False,
+        ignore_prefix=False,
+    ) -> tuple[BaseRepo, Any]:
+        try:
+            parsed_uri = urlparse(uri)
+            scheme = parsed_uri.scheme
+            base = parsed_uri.netloc
+            prefix = parsed_uri.path.lstrip("/")
+
+            if scheme == "gs":
+                repo = GCSRepo(base, LOCAL_DIR)
+            elif scheme in {"file"}:
+                homedir = os.path.join(LOCAL_REPO, base)
+                repo = LocalRepo(homedir, homedir)
+            else:
+                raise AppException(
+                    ErrorCode.REPO_INITIALIZATION_ERROR,
+                    f"Unknown scheme: {scheme}",
+                )
+            if ignore_prefix:
+                return repo
+            if download:
+                return repo, repo.download_obj(prefix)
+            else:
+                return repo, repo.get_obj(prefix)
+        except Exception as e:
+            if isinstance(e, AppException):
+                raise e
+            error_code = ErrorCode.REPO_INITIALIZATION_ERROR
+            log.error(
+                f"Failed to init repository from uri: {uri}",
+                status_code=error_code.status_code,
+                status=error_code.name,
+                exc_info=True,
+            )
+            raise AppException(
+                error_code,
+                f"Failed to initialize repo: {str(e)}",
+            ) from e
+
+
+---
 src/ocrorchestrator/repos/base.py
 ---
+import base64
 import functools
 import traceback
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
+import fitz
 import structlog
 
 from ..datamodels.api_io import AppException
@@ -1475,20 +1558,51 @@ class BaseRepo(ABC):
         pass
 
     @abstractmethod
-    def _download_obj(self, path: str) -> None:
+    def _get_binary(self, path: str) -> bytes:
+        pass
+
+    def _get_image(self, path: str) -> str:
+        image_data = self._get_binary(path)
+        return base64.b64encode(image_data).decode("utf-8")
+
+    def _get_pdf(self, path: str) -> str:
+        pdf_data = self._get_binary(path)
+        pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
+        if len(pdf_document) > 0:
+            first_page = pdf_document[0]
+            pix = first_page.get_pixmap()
+            img_data = pix.tobytes("png")
+            return base64.b64encode(img_data).decode("utf-8")
+        return ""
+
+    @abstractmethod
+    def _download_obj(self, path: str, overwrite=False) -> str:
+        pass
+
+    @abstractmethod
+    def _list_directory(self, path: str) -> List[str]:
         pass
 
     @repo_error_handler
     def get_obj(self, path: str) -> str:
-        if path.endswith(".yaml"):
+        if path.endswith("/"):
+            return self._list_directory(path)
+        elif path.endswith((".yaml", ".yml")):
             return self._get_yaml(path)
         elif path.endswith(".json"):
             return self._get_json(path)
-        return self._get_text(path)
+        elif path.lower().endswith((".png", ".jpg", ".jpeg")):
+            return self._get_image(path)
+        elif path.lower().endswith(".pdf"):
+            return self._get_pdf(path)
+        elif path.lower().endswith(".txt"):
+            return self._get_text(path)
+        else:
+            return self._get_binary(path)
 
     @repo_error_handler
-    def download_obj(self, path: str) -> None:
-        return self._download_obj(path)
+    def download_obj(self, path: str, overwrite=False) -> str:
+        return self._download_obj(path, overwrite=overwrite)
 
 
 class RepoException(AppException):
@@ -1496,42 +1610,62 @@ class RepoException(AppException):
 
 
 ---
-src/ocrorchestrator/repos/local.py
+src/ocrorchestrator/repos/gcs.py
 ---
 import json
-import shutil
-from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import yaml
 
 from .base import BaseRepo
 
 
-class LocalRepo(BaseRepo):
+class GCSRepo(BaseRepo):
+    def __init__(self, remote_path: str, local_dir: str):
+        from google.cloud import storage
+
+        super().__init__(remote_path, local_dir)
+        self.client = storage.Client()
+        self.bucket = self.client.bucket(self.remote_path)
+
     def _get_yaml(self, path: str) -> Dict[str, Any]:
-        full_path = Path(self.remote_path) / path
-        with open(full_path, "r") as file:
-            return yaml.safe_load(file)
+        blob = self.bucket.blob(path)
+        content = blob.download_as_text()
+        return yaml.safe_load(content)
 
     def _get_json(self, path: str) -> Dict[str, Any]:
-        full_path = Path(self.remote_path) / path
-        with open(full_path, "r") as file:
-            return json.load(file)
+        blob = self.bucket.blob(path)
+        content = blob.download_as_text()
+        return json.loads(content)
 
     def _get_text(self, path: str) -> str:
-        full_path = Path(self.remote_path) / path
-        with open(full_path, "r") as file:
-            return file.read()
+        blob = self.bucket.blob(path)
+        return blob.download_as_text()
 
-    def _download_obj(self, path: str) -> None:
-        src_path = Path(self.remote_path) / path
+    def _get_binary(self, path: str) -> bytes:
+        blob = self.bucket.blob(path)
+        return blob.download_as_bytes()
+
+    def _list_directory(self, path: str) -> List[str]:
+        prefix = path.rstrip("/") + "/"
+        blobs = self.bucket.list_blobs(prefix=prefix, delimiter="/")
+        files = []
+        for blob in blobs:
+            if blob.name != prefix:  # Exclude the directory itself
+                file_path = blob.name[len(prefix) :]
+                if (
+                    "/" not in file_path
+                ):  # Only include files in the immediate directory
+                    files.append(blob.name)
+        return files
+
+    def _download_obj(self, path: str, overwrite=False) -> str:
+        blob = self.bucket.blob(path)
         local_file_path = self.local_dir / path
+        if local_file_path.exists() and not overwrite:
+            return str(local_file_path)
         local_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if not local_file_path.exists():
-            shutil.copy2(src_path, local_file_path)
-
+        blob.download_to_filename(str(local_file_path))
         return str(local_file_path)
 
 

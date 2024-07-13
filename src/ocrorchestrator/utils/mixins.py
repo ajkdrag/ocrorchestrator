@@ -10,7 +10,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_google_vertexai import ChatVertexAI
 from PIL import Image
 
-from ..config.app_config import TorchClassifierOutput
+from ..config.app_config import TorchClassifierOutput, FieldInfo
 from .constants import SAFETY_SETTINGS
 from .misc import generate_dynamic_model
 from .ml import get_device, load_pretrained_classifier
@@ -41,31 +41,23 @@ class VertexAILangchainMixin:
             # safety_settings=SAFETY_SETTINGS,
         )
 
-    def load_output_parser(self, fields: list[str]):
+    def load_output_parser(self, fields: list[FieldInfo]):
         log.info("Loading output parser", fields=fields)
         ExtractedOutputModel = generate_dynamic_model(fields)
         self.output_parser = PydanticOutputParser(
             pydantic_object=ExtractedOutputModel,
         )
 
-    def load_prompt(self, prompt: str):
+    def load_prompt(self, template: str):
         log.info("Loading prompt template")
-        self.prompt = prompt
         self.prompt_temp = PromptTemplate(
-            template="\n".join(
-                [
-                    "{sys_prompt}",
-                    "{format}",
-                    "Analyze the image and return the fields in the right format.",
-                ]
-            ),
+            template=template,
             input_variables=[],
             partial_variables={
-                "sys_prompt": prompt,
                 "format": self.output_parser.get_format_instructions(),
             },
         )
-        log.info("Prompt template loaded", prompt_preview=prompt[:100] + "...")
+        log.info("Prompt template loaded", template=template[:100] + "...")
 
     def predict(self, image_data: str) -> Dict[str, Any]:
         image_message = {
