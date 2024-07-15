@@ -53,3 +53,8 @@ class GCSRepo(BaseRepo):
         local_file_path.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(local_file_path))
         return str(local_file_path)
+
+    def _save_file(self, path: str, content: str) -> None:
+        blob = self.bucket.blob(path)
+        blob.upload_from_string(content)
+        return f"gs://{self.remote_path}/{path}"

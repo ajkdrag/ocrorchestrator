@@ -40,7 +40,7 @@ def process_error_handler(func: Callable):
                 status=error_code.name,
                 exc_info=True,
             )
-            raise ProcessorException(error_code, traceback.format_exc()) from e
+            raise ProcessorException(error_code, traceback.format_exc())
 
     return wrapper
 
@@ -69,8 +69,7 @@ class BaseProcessor:
         repo: BaseRepo,
     ) -> str:
         file_content = json.dumps(result)
-        repo.save_file(save_options.output_path, file_content)
-        return save_options.output_path
+        return repo.save_file(save_options.path, file_content)
 
     @process_error_handler
     @log_execution_time
@@ -86,12 +85,13 @@ class BaseProcessor:
             log.info("Model output", output=result)
         if req.save_options:
             opts = req.save_options
-            repo = RepoFactory.from_uri(
+            repo, prefix = RepoFactory.from_uri(
                 opts.path,
-                ignore_prefix=True,
+                read_prefix=False,
             )
+            opts.path = prefix
             if opts.path.endswith("/"):
-                opts.path += f"{req.guid}.{opts.fmt}"
+                opts.path += f"{req.guid}.{opts.format}"
 
             saved_path = self._save_output(result, opts, repo)
             return {"saved_location": saved_path}

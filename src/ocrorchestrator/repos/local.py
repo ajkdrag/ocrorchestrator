@@ -41,3 +41,10 @@ class LocalRepo(BaseRepo):
             return str(local_file_path)
         shutil.copy2(src_path, local_file_path)
         return str(local_file_path)
+
+    def _save_file(self, path: str, content: str) -> str:
+        full_path = Path(self.remote_path) / path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(full_path, "w") as file:
+            file.write(content)
+        return str(full_path)

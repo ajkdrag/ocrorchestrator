@@ -1,11 +1,22 @@
 import os
 from typing import Any, Dict, List, Optional
-from fastapi import HTTPException
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, root_validator
+from fastapi import HTTPException
+from pydantic import (
+    BaseModel,
+    Field,
+    model_validator,
+    field_validator,
+)
+from typing_extensions import Self
 
 from ..utils.constants import ErrorCode
+
+
+class FieldInfo(BaseModel):
+    name: str
+    description: str = ""
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -23,9 +34,18 @@ class OCRRequest(BaseModel):
     guid: str = Field(default_factory=uuid4)
     category: str
     task: str
-    fields: Optional[List[str]] = None
+    fields: Optional[List[FieldInfo]] = None
     save_options: Optional[SaveOptions] = None
     log_result: bool = True
+
+    @field_validator("fields")
+    @classmethod
+    def convert_fields_to_fieldinfo(cls, v: list) -> list:
+        if v is None:
+            return v
+        return [
+            FieldInfo(name=field) if isinstance(field, str) else field for field in v
+        ]
 
     @staticmethod
     def from_offline_req(OCRRequestOffline, image):
@@ -39,26 +59,29 @@ class OCRRequestOffline(BaseModel):
     guid: str = Field(default_factory=uuid4)
     category: str
     task: str
-    fields: Optional[List[str]] = None
+    fields: Optional[List[FieldInfo]] = None
     save_options: Optional[SaveOptions] = None
     log_result: bool = True
 
-    @root_validator(pre=True)
-    def validate_save_options_path(cls, values):
-        save_options = values.get("save_options")
-        if save_options and save_options.path:
-            path = save_options.path
+    @field_validator("fields")
+    @classmethod
+    def convert_fields_to_fieldinfo(cls, v: list) -> list:
+        if v is None:
+            return v
+        return [
+            FieldInfo(name=field) if isinstance(field, str) else field for field in v
+        ]
 
-            # Check if the path looks like a file path
-            _, ext = os.path.splitext(path)
-            if ext:
-                raise ValueError(
-                    "save_options.path must be a directory path, not a file path"
-                )
-
-            save_options.path = save_options.path.rstrip("/") + "/"
-
-        return values
+    @model_validator(mode="after")
+    def check_save_options(self) -> Self:
+        pth = self.save_options.path
+        _, ext = os.path.splitext(pth)
+        if ext:
+            raise ValueError(
+                "save_options.path must be a directory path, not a file path"
+            )
+        self.save_options.path = pth.rstrip("/") + "/"
+        return self
 
 
 class AppResponse(BaseModel):
@@ -75,15 +98,3 @@ class AppException(HTTPException):
         )
         self.status = error_code.name
 
-
-class AppException2(Exception):
-    def __init__(self, error_code: ErrorCode, detail: str = None):
-        super().__init__(
-            *[
-                error_code.status_code,
-                f"{error_code.name}: {detail or error_code.message}",
-            ]
-        )
-        self.status = error_code.name
-        self.status_code = error_code.status_code
-        self.detail = f"{error_code.name}: {detail or error_code.message}"

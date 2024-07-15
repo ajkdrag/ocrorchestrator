@@ -10,42 +10,55 @@ from .datamodels.api_io import (
     AppResponse,
     ConfigUpdateRequest,
     OCRRequest,
-    OCRRequestOffline
+    OCRRequestOffline,
 )
+from pydantic import BaseModel
 from .deps import get_proc_manager, get_processor
 from .managers.processor import ProcessorManager
 from .processors import BaseProcessor
 from .utils.constants import ErrorCode
 from .utils.misc import create_dynamic_message
 from .utils.timing import log_execution_time
+from typing import Union, List
 
 ocr_router = APIRouter()
 log = structlog.get_logger()
 
 
-def process_request(req: OCRRequest, func: Callable) -> AppResponse:
+def process_request(req: BaseModel, func: Callable) -> AppResponse:
     try:
         response = func(req)
-        if hasattr(req, "fields"):
-            if isinstance(response, list):
-                response = [create_dynamic_message(r, req.fields) for r in response]
-            else:
-                response = create_dynamic_message(response, req.fields)
-        log.info("--- Request processed successfully ---")
-        return AppResponse(status="OK", status_code=200, message=response)
-    except Exception as e:
-        if isinstance(e, AppException):
-            raise e
 
+        if hasattr(req, "fields") and not hasattr(req, "save_options"):
+            response = _format_response(response, req.fields)
+
+        log.info("Request processed successfully")
+        return AppResponse(status="OK", status_code=200, message=response)
+
+    except AppException as ae:
+        log.error("Application-specific exception occurred", exc_info=True)
+        raise ae
+
+    except Exception as e:
         error_code = ErrorCode.INTERNAL_SERVER_ERROR
         log.error(
-            f"Error in {func.__name__}",
+            "Unexpected error occurred",
+            error=str(e),
+            function=func.__name__,
             status_code=error_code.status_code,
             status=error_code.name,
             exc_info=True,
         )
-
         raise AppException(error_code, traceback.format_exc())
+
+
+def _format_response(
+    response: Union[dict, List[dict]],
+    fields: List[str],
+) -> Union[dict, List[dict]]:
+    if isinstance(response, list):
+        return [create_dynamic_message(r, fields) for r in response]
+    return create_dynamic_message(response, fields)
 
 
 @ocr_router.post("/predict")

@@ -2,7 +2,7 @@ import os
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
 from .config.app_config import AppConfig
@@ -13,11 +13,13 @@ from .repos.factory import RepoFactory
 from .routers import ocr_router
 from .utils.logging import LoggerMiddleware
 from .datamodels.api_io import AppException, AppResponse
+from .utils.constants import ErrorCode
 
 config_path = os.environ["CONFIG_PATH"]
 log = structlog.get_logger()
 
 log.info(f"Using starter config: {config_path}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,7 +35,12 @@ async def lifespan(app: FastAPI):
     app.state.proc_manager = None
 
 
-async def ocr_exception_handler(request: Request, exc: AppException):
+async def ocr_exception_handler(request: Request, exc: Exception):
+    if not isinstance(exc, AppException):
+        exc = AppException(
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        )
     log.error(
         f"Exception occurred: {exc.detail}",
         status_code=exc.status_code,
@@ -64,8 +71,9 @@ async def rest_exception_handler(request: Request, exc: StarletteHTTPException):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(LoggerMiddleware)
 app.include_router(ocr_router)
-# app.add_exception_handler(AppException, ocr_exception_handler)
-# app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
+app.add_exception_handler(Exception, ocr_exception_handler)
+app.add_exception_handler(HTTPException, ocr_exception_handler)
+app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
 
 
 @app.get("/")

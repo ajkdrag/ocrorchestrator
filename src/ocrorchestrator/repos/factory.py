@@ -15,7 +15,7 @@ class RepoFactory:
     def from_uri(
         uri: str,
         download=False,
-        ignore_prefix=False,
+        read_prefix=True,
     ) -> tuple[BaseRepo, Any]:
         try:
             parsed_uri = urlparse(uri)
@@ -33,8 +33,8 @@ class RepoFactory:
                     ErrorCode.REPO_INITIALIZATION_ERROR,
                     f"Unknown scheme: {scheme}",
                 )
-            if ignore_prefix:
-                return repo
+            if not read_prefix:
+                return repo, prefix
             if download:
                 return repo, repo.download_obj(prefix)
             else:

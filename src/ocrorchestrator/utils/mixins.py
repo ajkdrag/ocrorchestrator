@@ -20,7 +20,7 @@ log = structlog.get_logger()
 
 class VertexAILangchainMixin:
     model: Any
-    prompt: Any
+    prompt_temp: Any
     output_parser: Any
 
     def load_llm(

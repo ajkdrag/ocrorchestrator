@@ -82,6 +82,10 @@ class BaseRepo(ABC):
     def _list_directory(self, path: str) -> List[str]:
         pass
 
+    @abstractmethod
+    def _save_file(self, path: str, content: str) -> str:
+        pass
+
     @repo_error_handler
     def get_obj(self, path: str) -> str:
         if path.endswith("/"):
@@ -102,6 +106,10 @@ class BaseRepo(ABC):
     @repo_error_handler
     def download_obj(self, path: str, overwrite=False) -> str:
         return self._download_obj(path, overwrite=overwrite)
+
+    @repo_error_handler
+    def save_file(self, path: str, content:str) -> str:
+        return self._save_file(path, content)
 
 
 class RepoException(AppException):

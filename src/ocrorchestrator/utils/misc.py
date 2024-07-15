@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field, create_model
 from ..config.app_config import FieldInfo
@@ -31,13 +31,15 @@ def generate_dynamic_model(
 
 
 def create_dynamic_message(
-    resp: Dict[str, Any], fields: Optional[List[str]] = None
+    resp: Dict[str, Any], fields: List[FieldInfo] = None
 ) -> BaseModel:
     if fields is None:
         field_definitions = {field: (type(value), ...) for field, value in resp.items()}
     else:
         field_definitions = {
-            field: (type(resp[field]), ...) for field in fields if field in resp
+            field.name: (type(resp[field.name]), ...)
+            for field in fields
+            if field.name in resp
         }
     DynamicMessage = create_model("DynamicMessage", **field_definitions)
     return DynamicMessage(**resp)
