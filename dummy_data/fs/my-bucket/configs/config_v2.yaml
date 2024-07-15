@@ -1,0 +1,55 @@
+categories:
+  default:
+    extraction:
+      processor: LLMProcessor
+      model: gemini-1.5-flash
+      prompt_template: general.txt
+  #     fields: 
+  #       - name: title
+  #       - name: summary
+  #         description: One sentence text only summary of the article
+  # table:
+  #   extraction:
+  #     processor: LLMProcessor
+  #     model: gemini-1.5-flash
+  #     prompt_template: general.txt
+  #     fields: 
+  #       - name: list_cig_codes
+  # id:
+  #   extraction:
+  #     processor: LLMProcessor
+  #     model: gemini-1.5-flash
+  #     prompt_template: general.txt
+  #     fields: 
+  #       - name: full_name
+  #       - name: expiry_date
+  #         description: Expiry date converted to YYYY-MM-DD format.
+  #       - name: country
+  #       - name: id_no
+  #         description: The document id value. 
+  # invoice:
+  #   extraction:
+  #     processor: LLMProcessor
+  #     model: gemini-1.5-flash
+  #     prompt_template: general.txt
+  #     fields: 
+  #       - name: customer_no
+  #         description: Unique customer number or id.
+  #       - name: net_amount
+  #         description: Net amount of the invoice.
+  #       - name: date
+  #         description: Invoice date converted to YYYY-MM-DD format.
+  # checks:
+  #   validation:
+  #     processor: DocumentValidationProcessor
+  #     model: resnet18__clf.pt
+  #     params:
+  #       - img_size:
+  #           - 240
+  #           - 320
+  #         target: clean
+  #     classes:
+  #       - blanks
+  #       - blurs
+  #       - clean
+  #       - dirty
