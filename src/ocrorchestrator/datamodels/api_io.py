@@ -9,6 +9,7 @@ from pydantic import (
     model_validator,
     field_validator,
 )
+from typing import Union
 from typing_extensions import Self
 
 from ..utils.constants import ErrorCode
@@ -34,7 +35,7 @@ class OCRRequest(BaseModel):
     guid: str = Field(default_factory=uuid4)
     category: str
     task: str
-    fields: Optional[List[FieldInfo]] = None
+    fields: Optional[List[Union[FieldInfo, str]]] = None
     save_options: Optional[SaveOptions] = None
     log_result: bool = True
 
@@ -59,7 +60,7 @@ class OCRRequestOffline(BaseModel):
     guid: str = Field(default_factory=uuid4)
     category: str
     task: str
-    fields: Optional[List[FieldInfo]] = None
+    fields: Optional[List[Union[FieldInfo, str]]] = None
     save_options: Optional[SaveOptions] = None
     log_result: bool = True
 
@@ -97,4 +98,3 @@ class AppException(HTTPException):
             detail=f"{error_code.name}: {detail or error_code.message}",
         )
         self.status = error_code.name
-

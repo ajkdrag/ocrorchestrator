@@ -1,33 +1,36 @@
 import os
 from contextlib import asynccontextmanager
 
+import gradio as gr
 import structlog
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config.app_config import AppConfig
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from .datamodels.api_io import AppException, AppResponse
 from .managers.processor import ProcessorManager
 from .managers.secrets import setup_google_credentials
 from .repos.factory import RepoFactory
 from .routers import ocr_router
-from .utils.logging import LoggerMiddleware
-from .datamodels.api_io import AppException, AppResponse
+from .ui import create_gradio_interface
 from .utils.constants import ErrorCode
+from .utils.logging import LoggerMiddleware
 
 config_path = os.environ["CONFIG_PATH"]
 log = structlog.get_logger()
 
 log.info(f"Using starter config: {config_path}")
 
+setup_google_credentials()
+repo, content = RepoFactory.from_uri(config_path)
+config = AppConfig(**content)
+proc_manager = ProcessorManager(config, repo)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("**** Starting application ****")
-    setup_google_credentials()
-    repo, content = RepoFactory.from_uri(config_path)
-    config = AppConfig(**content)
-    proc_manager = ProcessorManager(config, repo)
+    proc_manager._initialize()
     app.state.proc_manager = proc_manager
     yield
     log.info("**** Shutting down application ****")
@@ -75,6 +78,9 @@ app.add_exception_handler(Exception, ocr_exception_handler)
 app.add_exception_handler(HTTPException, ocr_exception_handler)
 app.add_exception_handler(StarletteHTTPException, rest_exception_handler)
 
+print(proc_manager)
+gr_interface = create_gradio_interface(proc_manager)
+app = gr.mount_gradio_app(app, gr_interface, path="/ui")
 
 @app.get("/")
 async def root():

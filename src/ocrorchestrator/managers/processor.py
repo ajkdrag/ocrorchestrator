@@ -16,7 +16,6 @@ class ProcessorManager:
         self.app_config = app_config
         self.repo = repo
         self.processors: Dict[str, BaseProcessor] = {}
-        self._initialize()
 
     def _initialize(self):
         log.info("**** Initializing processors ****")

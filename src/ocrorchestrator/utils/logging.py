@@ -11,6 +11,11 @@ healthcheck_routes = [
     "/ocrorchestrator/",
 ]
 
+api_routes = [
+    "/predict",
+    "/predict_offline",
+]
+
 
 class LoggerMiddleware(BaseHTTPMiddleware):
     async def dispatch(
@@ -27,7 +32,7 @@ class LoggerMiddleware(BaseHTTPMiddleware):
             api_name=path,
         )
 
-        if request.method == "POST" and path not in healthcheck_routes:
+        if request.method == "POST" and path in api_routes:
             request_data = await request.json()
             structlog.contextvars.bind_contextvars(
                 guid=request_data.get("guid", ""),
