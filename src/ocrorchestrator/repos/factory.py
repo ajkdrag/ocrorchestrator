@@ -26,7 +26,7 @@ class RepoFactory:
             if scheme == "gs":
                 repo = GCSRepo(base, LOCAL_DIR)
             elif scheme in {"file"}:
-                homedir = os.path.join(LOCAL_REPO, base)
+                homedir = os.path.join(LOCAL_REPO, base) if base != "" else f"/{base.strip('/')}"
                 repo = LocalRepo(homedir, homedir)
             else:
                 raise AppException(

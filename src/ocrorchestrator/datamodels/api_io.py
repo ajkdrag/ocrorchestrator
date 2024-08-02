@@ -32,7 +32,7 @@ class SaveOptions(BaseModel):
 
 class OCRRequest(BaseModel):
     image: str  # base64 image as utf-8
-    guid: str = Field(default_factory=uuid4)
+    guid: str = Field(default_factory=lambda: str(uuid4()))
     category: str
     task: str
     fields: Optional[List[Union[FieldInfo, str]]] = None
@@ -49,15 +49,16 @@ class OCRRequest(BaseModel):
         ]
 
     @staticmethod
-    def from_offline_req(OCRRequestOffline, image):
-        req_dict = OCRRequestOffline.dict()
+    def from_offline_req(req, image):
+        req_dict = req.dict()
+        print(req_dict)
         req_dict["image"] = image
         return OCRRequest(**req_dict)
 
 
 class OCRRequestOffline(BaseModel):
     location: str  # path to gcs/s3/folder/file
-    guid: str = Field(default_factory=uuid4)
+    guid: str = Field(default_factory=lambda: str(uuid4()))
     category: str
     task: str
     fields: Optional[List[Union[FieldInfo, str]]] = None
@@ -75,6 +76,8 @@ class OCRRequestOffline(BaseModel):
 
     @model_validator(mode="after")
     def check_save_options(self) -> Self:
+        if self.save_options is None:
+            return self
         pth = self.save_options.path
         _, ext = os.path.splitext(pth)
         if ext:
