@@ -2,7 +2,7 @@
 
 ## Overview
 
-The OCR Orchestrator Service is a versatile, FastAPI-based solution designed to serve various OCR (Optical Character Recognition) projects within our organization. It provides a unified interface for processing different types of document images, including cheques, payslips, bank statements, passports, and utility bills.
+The OCR Orchestrator Service is a versatile, FastAPI-based solution designed to serve various OCR (Optical Character Recognition) usecases. It provides a unified interface for processing different types of document images, including cheques, payslips, bank statements, passports, and utility bills.
 
 ## Key Features
 
@@ -11,6 +11,22 @@ The OCR Orchestrator Service is a versatile, FastAPI-based solution designed to 
 - Support for both online (real-time) and offline processing
 - Integration with various AI models and external APIs
 - Extensible design for easy addition of new processors and tasks
+
+## Setup
+
+The project uses PDM to manage dependencies. To install the project:
+
+```pdm install --no-self --no-lock```
+
+## Quickstart
+
+Run the script to start the Uvicorn server. 
+Gradio UI will be available at http://localhost:8000/ocrorchestrator/ui.
+FastAPI Swagger will be available at http://localhost:8000/docs
+
+```
+localrun=true bash entrypoint.sh
+```
 
 ## Folder Structure
 
@@ -40,6 +56,7 @@ src/ocrorchestrator/
 ├── routers.py
 ├── deps.py
 ├── main.py
+├── ui.py
 └── utils/
     ├── constants.py
     ├── img.py
