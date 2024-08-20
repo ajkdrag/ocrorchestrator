@@ -1,4 +1,3 @@
-import os
 from typing import Any, Dict
 
 from ..config.app_config import (
@@ -9,11 +8,11 @@ from ..datamodels.api_io import OCRRequest
 from ..repos import BaseRepo
 from ..utils.constants import IMG_SIZE
 from ..utils.img import base64_to_pil
-from ..utils.mixins import TorchClassifierMixin
+from ..utils.mixins import FastaiLearnerMixin
 from .base import BaseProcessor
 
 
-class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
+class DocumentValidationProcessor(BaseProcessor, FastaiLearnerMixin):
     def __init__(
         self,
         task_config: TaskConfig,
@@ -27,10 +26,7 @@ class DocumentValidationProcessor(BaseProcessor, TorchClassifierMixin):
 
     def _setup(self):
         checkpoint = self.repo.download_obj(
-            os.path.join(
-                self.models_dir,
-                self.task_config.model,
-            )
+            f"{self.models_dir}/{self.task_config.model}"
         )
         self.load_model(
             self.model_name,

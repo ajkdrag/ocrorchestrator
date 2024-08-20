@@ -11,6 +11,11 @@ healthcheck_routes = [
     "/ocrorchestrator/",
 ]
 
+api_routes = [
+    "/ocrorchestrator/predict",
+    "/ocrorchestrator/predict_offline",
+]
+
 
 class LoggerMiddleware(BaseHTTPMiddleware):
     async def dispatch(
@@ -27,7 +32,7 @@ class LoggerMiddleware(BaseHTTPMiddleware):
             api_name=path,
         )
 
-        if request.method == "POST" and path not in healthcheck_routes:
+        if request.method == "POST" and path in api_routes:
             request_data = await request.json()
             structlog.contextvars.bind_contextvars(
                 guid=request_data.get("guid", ""),
@@ -41,7 +46,7 @@ class LoggerMiddleware(BaseHTTPMiddleware):
             status_code=response.status_code,
         )
 
-        if path not in healthcheck_routes:
+        if path in api_routes:
             if 400 <= response.status_code < 500:
                 logger.warn("Client error")
             elif response.status_code >= 500:

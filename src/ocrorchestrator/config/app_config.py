@@ -1,13 +1,18 @@
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, root_validator, validator
 
 
-class TorchClassifierOutput(BaseModel):
+class ClassifierOutput(BaseModel):
     prediction: str
     conf: float
     probs: Dict[str, float]
+
+
+class FieldInfo(BaseModel):
+    name: str
+    description: str = ""
 
 
 class TaskConfig(BaseModel):
@@ -16,10 +21,18 @@ class TaskConfig(BaseModel):
     model: Optional[str] = None
     prompt_template: Optional[str] = None
     params: List = Field(default_factory=list)
-    fields: Optional[List[str]] = None
+    fields: Optional[List[FieldInfo]] = None
     classes: Optional[List[str]] = None
     args: List[Any] = Field(default_factory=list)
     kwargs: Dict[str, Any] = Field(default_factory=dict)
+
+    @validator("fields", pre=True)
+    def convert_fields_to_fieldinfo(cls, v):
+        if v is None:
+            return v
+        return [
+            FieldInfo(name=field) if isinstance(field, str) else field for field in v
+        ]
 
     @root_validator(pre=True)
     def extract_args_and_kwargs(cls, values):
@@ -45,7 +58,6 @@ class GeneralConfig(BaseModel):
             "std": [0.229, 0.224, 0.225],
         }
     )
-    log_model_output: bool = Field(default=False)
 
 
 class AppConfig(BaseModel):
@@ -65,7 +77,6 @@ class AppConfig(BaseModel):
 
         task_config = category_config.get(task)
         if not task_config:
-            raise ValueError(
-                f"Task '{task}' not found for category '{category}'")
+            raise ValueError(f"Task '{task}' not found for category '{category}'")
 
         return task_config

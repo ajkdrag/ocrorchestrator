@@ -60,26 +60,34 @@ class BaseRepo(ABC):
     def _get_binary(self, path: str) -> bytes:
         pass
 
-    def _get_image(self, path: str) -> str:
+    def _get_image(self, path: str, encode=True) -> str:
         image_data = self._get_binary(path)
-        return base64.b64encode(image_data).decode("utf-8")
+        if encode:
+            return base64.b64encode(image_data).decode("utf-8")
+        return image_data
 
-    def _get_pdf(self, path: str) -> str:
+    def _get_pdf(self, path: str, page=0, encode=True) -> str:
         pdf_data = self._get_binary(path)
         pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
         if len(pdf_document) > 0:
-            first_page = pdf_document[0]
+            first_page = pdf_document[page]
             pix = first_page.get_pixmap()
             img_data = pix.tobytes("png")
-            return base64.b64encode(img_data).decode("utf-8")
+            if encode:
+                return base64.b64encode(img_data).decode("utf-8")
+            return img_data
         return ""
 
     @abstractmethod
-    def _download_obj(self, path: str) -> str:
+    def _download_obj(self, path: str, overwrite=False) -> str:
         pass
 
     @abstractmethod
     def _list_directory(self, path: str) -> List[str]:
+        pass
+
+    @abstractmethod
+    def _save_file(self, path: str, content: str) -> str:
         pass
 
     @repo_error_handler
@@ -100,8 +108,12 @@ class BaseRepo(ABC):
             return self._get_binary(path)
 
     @repo_error_handler
-    def download_obj(self, path: str) -> str:
-        return self._download_obj(path)
+    def download_obj(self, path: str, overwrite=False) -> str:
+        return self._download_obj(path, overwrite=overwrite)
+
+    @repo_error_handler
+    def save_file(self, path: str, content:str) -> str:
+        return self._save_file(path, content)
 
 
 class RepoException(AppException):

@@ -1,4 +1,3 @@
-import os
 from typing import Any, Dict
 
 import structlog
@@ -6,6 +5,7 @@ import structlog
 from ..config.app_config import GeneralConfig, TaskConfig
 from ..datamodels.api_io import OCRRequest
 from ..repos import BaseRepo
+from ..utils.img import get_image_mime_type
 from ..utils.mixins import VertexAILangchainMixin
 from .base import BaseProcessor
 
@@ -35,16 +35,16 @@ class LLMProcessor(BaseProcessor, VertexAILangchainMixin):
         }
 
     def _setup(self):
-        prompt = self.repo.get_obj(
-            os.path.join(
-                self.prompts_dir,
-                self.prompt_file,
-            )
-        )
+        self.template = self.repo.get_obj(
+            f"{self.prompts_dir}/{self.prompt_file}")
         self.load_llm(model_name=self.model_name, **self.model_config)
-        self.load_output_parser(self.fields)
-        self.load_prompt(prompt)
+        if self.fields:
+            self.load_output_parser(self.fields)
+            self.load_prompt(self.template)
 
     def _process(self, req: OCRRequest) -> Dict[str, Any]:
-        image_data = f"data:image/PNG;base64,{req.image}"
+        image_data = f"data:{get_image_mime_type(req.image)};base64,{req.image}"
+        if self.fields is None:
+            self.load_output_parser(req.fields)
+            self.load_prompt(self.template)
         return self.predict(image_data)

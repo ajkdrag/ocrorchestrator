@@ -1,6 +1,5 @@
 import functools
 import json
-import os
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict
@@ -41,7 +40,7 @@ def process_error_handler(func: Callable):
                 status=error_code.name,
                 exc_info=True,
             )
-            raise ProcessorException(error_code, traceback.format_exc()) from e
+            raise ProcessorException(error_code, traceback.format_exc())
 
     return wrapper
 
@@ -56,7 +55,6 @@ class BaseProcessor:
         self.task_config = task_config
         self.general_config = general_config
         self.repo = repo
-        self.log_model_output = general_config.log_model_output
 
     def _setup(self) -> None:
         raise NotImplementedError
@@ -68,20 +66,10 @@ class BaseProcessor:
         self,
         result: Dict[str, Any],
         save_options: SaveOptions,
-        filename: str,
+        repo: BaseRepo,
     ) -> str:
-        if not self.output_repo:
-            self.output_repo = self._get_repo(save_options.output_path)
-
         file_content = json.dumps(result)
-        fname = f"{filename}.{save_options.output_format}"
-        dir = save_options.output_path
-        file_path = f"{dir}/{fname}"
-        self.output_repo.save_file(file_path, file_content)
-        return file_path
-
-    def _process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
-        raise NotImplementedError
+        return repo.save_file(save_options.path, file_content)
 
     @process_error_handler
     @log_execution_time
@@ -93,14 +81,19 @@ class BaseProcessor:
     def process(self, req: OCRRequest) -> Dict[str, Any]:
         log.info("--- Processing online request ---")
         result = self._process(req)
-        if self.log_model_output:
+        if req.log_result:
             log.info("Model output", output=result)
         if req.save_options:
-            saved_path = self._save_output(
-                result,
-                req.save_options,
-                req.guid,
+            opts = req.save_options
+            repo, prefix = RepoFactory.from_uri(
+                opts.path,
+                read_prefix=False,
             )
+            opts.path = prefix
+            if opts.path.endswith("/"):
+                opts.path += f"{req.guid}.{opts.format}"
+
+            saved_path = self._save_output(result, opts, repo)
             return {"saved_location": saved_path}
         return result
 
@@ -108,13 +101,31 @@ class BaseProcessor:
     @log_execution_time
     def process_offline(self, req: OCRRequestOffline) -> Dict[str, Any]:
         log.info("--- Processing offline request ---")
-        # TODO: build src repo from req.location
-        src_repo = RepoFactory.from_uri(req.location)
-        # TODO: build tgt repo from req.save_options.output_path
-        result = self._process_offline(req)
-        if self.log_model_output:
-            log.info("Model output", output=result)
-        return result
+        src_repo, files_or_data = RepoFactory.from_uri(req.location)
+        if isinstance(files_or_data, list):
+            results = []
+            for file_ in files_or_data:
+                data = src_repo.get_obj(file_)
+                subreq = OCRRequest.from_offline_req(
+                    req,
+                    data,
+                )
+                if subreq.save_options:
+                    subreq.guid = Path(file_).stem
+
+                results.append(self.process(subreq))
+
+            if req.save_options:
+                return {"saved_count": len(results)}
+            else:
+                return results
+
+        else:
+            subreq = OCRRequest.from_offline_req(
+                req,
+                files_or_data,
+            )
+            return self.process(subreq)
 
 
 class ProcessorException(AppException):

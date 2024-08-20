@@ -12,7 +12,11 @@ log = structlog.get_logger()
 
 
 class RepoFactory:
-    def from_uri(uri: str, download=False) -> tuple[BaseRepo, Any]:
+    def from_uri(
+        uri: str,
+        download=False,
+        read_prefix=True,
+    ) -> tuple[BaseRepo, Any]:
         try:
             parsed_uri = urlparse(uri)
             scheme = parsed_uri.scheme
@@ -29,6 +33,8 @@ class RepoFactory:
                     ErrorCode.REPO_INITIALIZATION_ERROR,
                     f"Unknown scheme: {scheme}",
                 )
+            if not read_prefix:
+                return repo, prefix
             if download:
                 return repo, repo.download_obj(prefix)
             else:

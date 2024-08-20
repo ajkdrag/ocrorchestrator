@@ -28,10 +28,10 @@ class ErrorCode(Enum):
     PROCESSING_ERROR = (502, "Processing Error")
     INITIALIZATION_ERROR = (503, "Initialization Error")
     PROCESS_CLEANUP_ERROR = (504, "Cleanup Error")
-    API_CALL_ERROR = (601, "Api Call Error")
-    REPO_GET_ERROR = (701, "Error reading file")
-    REPO_OBJECT_DOWNLOAD_ERROR = (702, "Error downloading object")
-    REPO_INITIALIZATION_ERROR = (703, "Error initializing repository")
+    API_CALL_ERROR = (511, "Api Call Error")
+    REPO_GET_ERROR = (521, "Error reading file")
+    REPO_OBJECT_DOWNLOAD_ERROR = (522, "Error downloading object")
+    REPO_INITIALIZATION_ERROR = (523, "Error initializing repository")
 
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
