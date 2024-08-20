@@ -9,7 +9,7 @@ IMG_SIZE = (224, 224)
 PKG_ROOT = Path(__file__).parent.parent
 PROJ_ROOT = PKG_ROOT.parent.parent
 LOCAL_DIR = PROJ_ROOT.joinpath("data/local").as_posix()
-LOCAL_REPO = PROJ_ROOT.joinpath("data/fs").as_posix()
+LOCAL_REPO = PROJ_ROOT.joinpath("local/fs").as_posix()
 GCP_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
 
 PRETRAINED_MODELS = {

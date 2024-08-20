@@ -1,0 +1,11 @@
+categories:
+  default:
+    extraction:
+      processor: LLMProcessor
+      prompt_template: general.txt
+      model: gemini-1.5-flash
+    # validation:
+    #   processor: DocumentValidationProcessor
+    #   model: export.pkl
+    #   params: [{img_size: [360, 360], target: clean}]
+    #   classes: ["blanks", "blurs", "clean", "dirty"]
